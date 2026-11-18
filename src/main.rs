@@ -12,6 +12,7 @@ mod files;
 mod filetype;
 mod fs_scan;
 mod hud;
+mod meta;
 mod nav;
 mod preview;
 mod render;
@@ -725,7 +726,16 @@ impl Running {
     fn search_key(&mut self, ev: &KeyEvent) {
         match ev.physical_key {
             PhysicalKey::Code(KeyCode::Escape) => self.close_search(),
-            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => self.next_match(),
+            // Enter: go to the best match and put the box away. Shift+Enter / Down: the
+            // next match, box stays open.
+            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter)
+                if !(self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight)) =>
+            {
+                self.match_next = 0;
+                self.next_match();
+                self.close_search();
+            }
+            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter | KeyCode::ArrowDown) => self.next_match(),
             PhysicalKey::Code(KeyCode::Tab) => self.search_filter = !self.search_filter,
             PhysicalKey::Code(KeyCode::Backspace) => {
                 if let Some(q) = &mut self.search {
@@ -1199,6 +1209,10 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if s.search.is_some() && event.state == ElementState::Pressed {
+                    // Shift still counts as held (Shift+Enter: next match).
+                    if let PhysicalKey::Code(c @ (KeyCode::ShiftLeft | KeyCode::ShiftRight)) = event.physical_key {
+                        s.keys.insert(c);
+                    }
                     s.search_key(&event);
                     return;
                 }

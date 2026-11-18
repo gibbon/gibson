@@ -284,6 +284,13 @@ fn front_page(c: &mut Canvas, e: &Entry, rng: &mut Rng, walk: &mut Walk, fonts: 
         y = r.y + r.h + 10;
     }
 
+    // ── File info (files): what the bytes say, sizes, times, a byte map ─────
+    if !e.is_dir && !e.meta.is_empty() {
+        y = info_panel(c, e, Rect { x: m, y, w: TEX_W as i32 - 2 * m, h: 0 }, fonts);
+        c.fill(Rect { x: m, y, w: TEX_W as i32 - 2 * m, h: 1 }, 150);
+        y += 8;
+    }
+
     // ── File types (folders): what the folder is made of ────────────────────
     if e.is_dir && !e.types.is_empty() {
         y = type_graph(c, e, Rect { x: m, y, w: TEX_W as i32 - 2 * m, h: 0 }, fonts);
@@ -294,6 +301,41 @@ fn front_page(c: &mut Canvas, e: &Entry, rng: &mut Rng, walk: &mut Walk, fonts: 
     // ── Mosaic body: blocks of real data ────────────────────────────────────
     let body = Rect { x: m, y, w: TEX_W as i32 - 2 * m, h: TEX_H as i32 - y - m };
     mosaic(c, body, e, rng, walk, fonts, 0.5);
+}
+
+/// A table of the file's facts, and a byte map: how often each byte value occurs in
+/// its first bytes (text clusters in the middle, compressed data is flat).
+fn info_panel(c: &mut Canvas, e: &Entry, area: Rect, fonts: &Fonts) -> i32 {
+    let full = Rect { x: 0, y: 0, w: TEX_W as i32, h: TEX_H as i32 };
+    let mut y = area.y + 16;
+    draw_text(c, &fonts.mono, 14.0, area.x as f32, y as f32, "FILE INFO", 200, full, false);
+    y += 8;
+    let key_w = 92;
+    for (k, v) in e.meta.iter().take(10) {
+        y += 16;
+        draw_text(c, &fonts.mono, 13.0, area.x as f32, y as f32, k, 140, full, false);
+        let v = fit(&fonts.mono, 13.0, v, (area.w - key_w) as f32);
+        draw_text(c, &fonts.mono, 13.0, (area.x + key_w) as f32, y as f32, &v, 235, full, false);
+    }
+    y += 10;
+    if !e.head.is_empty() {
+        y += 14;
+        draw_text(c, &fonts.mono, 12.0, area.x as f32, y as f32, "BYTE MAP  00", 150, full, false);
+        let end = "FF";
+        let ew = text_width(&fonts.mono, 12.0, end);
+        draw_text(c, &fonts.mono, 12.0, (area.x + area.w) as f32 - ew, y as f32, end, 150, full, false);
+        y += 6;
+        let bins = crate::meta::byte_map(&e.head);
+        let bw = area.w / bins.len() as i32;
+        let hmax = 34;
+        for (i, v) in bins.iter().enumerate() {
+            let h = ((v * hmax as f32) as i32).max(1);
+            c.fill(Rect { x: area.x + i as i32 * bw, y: y + hmax - h, w: (bw - 1).max(1), h }, 220);
+        }
+        c.fill(Rect { x: area.x, y: y + hmax + 1, w: area.w, h: 1 }, 120);
+        y += hmax + 8;
+    }
+    y
 }
 
 /// A stylised breakdown of the folder's files by type: a stacked ribbon of shares,
@@ -445,6 +487,8 @@ fn mosaic_block(c: &mut Canvas, b: Rect, e: &Entry, rng: &mut Rng, walk: &mut Wa
         0
     } else if has_head && pick < list_bias + 0.3 {
         1
+    } else if !e.meta.is_empty() && rng.f32() < 0.3 {
+        5 // the entry's facts
     } else {
         2 + (rng.f32() * 3.0) as u32
     };
@@ -512,6 +556,16 @@ fn mosaic_block(c: &mut Canvas, b: Rect, e: &Entry, rng: &mut Rng, walk: &mut Wa
             for i in 0..bars {
                 let w = (rng.f32() * inner.w as f32) as i32;
                 c.fill(Rect { x: inner.x, y: inner.y + i * 9, w, h: 5 }, level);
+            }
+        }
+        5 => {
+            // Facts block: KEY  VALUE rows, wrapping round the list.
+            let start = rng.next() as usize % e.meta.len();
+            for r in 0..rows {
+                let (k, v) = &e.meta[(start + r) % e.meta.len()];
+                let line = format!("{k:<9}{v}");
+                draw_text(c, &fonts.mono, px, inner.x as f32, y, &line, level, inner, invert);
+                y += line_h;
             }
         }
         _ => {

@@ -24,6 +24,7 @@ pub struct Entry {
     pub lines: Vec<(String, bool)>, // (text, is_folder) — child names, or text-file lines
     pub head: Vec<u8>,              // files: first bytes
     pub types: Vec<TypeStat>,       // folders: file types inside, biggest first
+    pub meta: Vec<(String, String)>, // facts for the tower: type, bytes, times, attributes...
 }
 
 /// Files of one type inside a folder (`label` is the upper-case extension, or OTHER).
@@ -120,7 +121,9 @@ fn read_dir_entry(p: &Path) -> Entry {
         lines: Vec::new(),
         head: Vec::new(),
         types: Vec::new(),
+        meta: Vec::new(),
     };
+    let (mut n_files, mut n_dirs) = (0usize, 0usize);
     let mut by_ext: std::collections::HashMap<String, (usize, u64)> = Default::default();
     if let Ok(rd) = fs::read_dir(p) {
         let mut sub_dirs = Vec::new();
@@ -132,6 +135,7 @@ fn read_dir_entry(p: &Path) -> Entry {
             }
             e.child_count += 1;
             let is_dir = item.file_type().map(|t| t.is_dir()).unwrap_or(false);
+            if is_dir { n_dirs += 1 } else { n_files += 1 }
             if !is_dir {
                 let len = item.metadata().map(|m| m.len()).unwrap_or(0);
                 e.size += len;
@@ -155,6 +159,7 @@ fn read_dir_entry(p: &Path) -> Entry {
         e.lines.extend(sub_files.into_iter().map(|n| (n, false)));
     }
     e.types = type_stats(by_ext);
+    e.meta = crate::meta::folder(fs::metadata(p).ok().as_ref(), n_files, n_dirs);
     e
 }
 
@@ -186,6 +191,7 @@ fn read_file_entry(p: &Path, len: u64) -> Entry {
         lines: Vec::new(),
         head: Vec::new(),
         types: Vec::new(),
+        meta: Vec::new(),
     };
     let ext = p.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
     let is_text = TEXT_EXT.contains(&ext.as_str());
@@ -206,6 +212,8 @@ fn read_file_entry(p: &Path, len: u64) -> Entry {
             }
         }
     }
+    let n_lines = if is_text { String::from_utf8_lossy(&e.head).lines().count() } else { 0 };
+    e.meta = crate::meta::file(p, fs::metadata(p).ok().as_ref(), &e.head, n_lines, is_text);
     e
 }
 

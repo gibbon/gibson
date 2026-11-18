@@ -374,7 +374,7 @@ impl Hud {
             let info = if q.is_empty() {
                 "TYPE A NAME   ESC CLOSE".to_string()
             } else {
-                format!("{n} {}   ENTER NEXT   ESC CLOSE", if *n == 1 { "MATCH" } else { "MATCHES" })
+                format!("{n} {}   ENTER GO   DOWN NEXT   ESC CLOSE", if *n == 1 { "MATCH" } else { "MATCHES" })
             };
             let iw = text_width(&fonts.mono, small_px(s), &info);
             let ix = (r.x + r.w) as f32 - iw - 12.0 * s;
@@ -715,7 +715,8 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
     ]),
     ("SEARCH", &[
         ("/  OR  CTRL + F", "search this folder by name"),
-        ("ENTER", "fly to the next match"),
+        ("ENTER", "fly to the best match, close"),
+        ("SHIFT + ENTER  /  DOWN", "next match, keep searching"),
         ("ESC", "close the search"),
     ]),
     ("VIEWER (IMAGES, VIDEO)", &[
