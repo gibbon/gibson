@@ -48,6 +48,7 @@ pub struct HudState {
     pub drives: Vec<PathBuf>,
     pub can_back: bool,
     pub can_up: bool,
+    pub fps: u32,
     pub hover: Option<HoverInfo>,
     pub selected: Option<(String, PathBuf, bool)>, // clicked tower: name, path, is folder
     pub status: String,
@@ -158,7 +159,9 @@ impl Hud {
             v.reverse();
             v
         };
-        let status_w = if st.status.is_empty() { 0 } else { text_width(&fonts.mono, mono, &st.status) as i32 + u(30.0) };
+        let fps_label = format!("{:>3} FPS", st.fps);
+        let fps_w = text_width(&fonts.mono, mono, &fps_label) as i32 + u(28.0);
+        let status_w = fps_w + if st.status.is_empty() { 0 } else { text_width(&fonts.mono, mono, &st.status) as i32 + u(30.0) };
         let sel_label = st.selected.as_ref().map(|(n, _, _)| n.to_uppercase());
         let sel_w = sel_label.as_ref().map_or(0.0, |l| text_width(&fonts.mono, mono, l) + 40.0 * s);
         let room = ((w - x - status_w - u(12.0)) as f32 - sel_w).max(0.0);
@@ -207,11 +210,16 @@ impl Hud {
             }
         }
 
-        // Status, right-aligned in the bar.
+        // Frame rate at the far right, status just left of it.
+        let fw = text_width(&fonts.mono, mono, &fps_label);
+        let fps_x = w as f32 - fw - 14.0 * s;
+        let fps_col = if st.fps >= 55 { DIM } else if st.fps >= 30 { AMBER } else { WARN };
+        self.text(&fonts.mono, mono, fps_x, base, &fps_label, fps_col, 1.0);
+        self.fill(Rect { x: fps_x as i32 - u(12.0), y: u(10.0), w: 1, h: bar_h - u(20.0) }, DIM, 0.8);
         if !st.status.is_empty() {
             let tw = text_width(&fonts.mono, mono, &st.status);
             let col = if st.warn { WARN } else { CYAN };
-            self.text(&fonts.mono, mono, w as f32 - tw - 14.0 * s, base, &st.status, col, 1.0);
+            self.text(&fonts.mono, mono, fps_x - u(26.0) as f32 - tw, base, &st.status, col, 1.0);
         }
 
         // ── Bottom left: what's under the cursor, or how to drive ───────────

@@ -1,5 +1,6 @@
 // Gibson — fly through your file system as a city of glass towers.
 
+mod cache;
 mod camera;
 mod city;
 mod fs_scan;
@@ -28,11 +29,11 @@ use winit::window::{CursorIcon, Window, WindowId};
 /// Work coming back from the loader threads.
 enum Msg {
     Scanned { generation: u64, path: PathBuf, result: Result<Vec<fs_scan::Entry>, String> },
-    Baked { generation: u64, index: usize, pages: Vec<textgen::Page> },
+    Baked { generation: u64, index: usize, pages: Vec<textgen::Page>, cached: bool },
     Drives(Vec<PathBuf>),
 }
 
-const PAGE_UPLOADS_PER_FRAME: usize = 12;
+const PAGE_UPLOADS_PER_FRAME: usize = 16;
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const CLICK_SLOP: f64 = 5.0; // pixels the mouse may move and still count as a click
 const HUD_MIN_INTERVAL: Duration = Duration::from_millis(33); // HUD redraws at most ~30/s
@@ -54,7 +55,8 @@ struct Running {
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     fonts: Arc<textgen::Fonts>,
-    pending: Vec<(usize, Vec<textgen::Page>)>, // baked pages, waiting for upload
+    pending: Vec<(usize, Vec<textgen::Page>, bool)>, // baked pages (and from cache?), waiting for upload
+    cache: cache::PageCache,
     hud: hud::Hud,
     drives: Vec<PathBuf>,
     message: Option<(String, bool, Instant)>, // (text, is_error, since)
@@ -139,8 +141,8 @@ impl Running {
                         }
                     }
                 }
-                Msg::Baked { generation, index, pages } if generation == self.generation => {
-                    self.pending.push((index, pages));
+                Msg::Baked { generation, index, pages, cached } if generation == self.generation => {
+                    self.pending.push((index, pages, cached));
                 }
                 Msg::Drives(d) => self.drives = d,
                 _ => {} // stale: from a folder we've already left
@@ -150,8 +152,11 @@ impl Running {
         if let Some(city) = &mut self.city {
             let mut uploaded = 0;
             while uploaded < PAGE_UPLOADS_PER_FRAME {
-                let Some((index, pages)) = self.pending.pop() else { break };
+                let Some((index, pages, cached)) = self.pending.pop() else { break };
                 let t = &mut city.towers[index];
+                if cached {
+                    t.appear = 1.0; // seen before: no need to rise again
+                }
                 let pages: Vec<textgen::Page> = pages.into_iter().take(t.max_pages as usize).collect();
                 for (p, page) in pages.iter().enumerate() {
                     self.renderer.upload_face(t.first_layer + p as u32, &page.mips);
@@ -208,17 +213,33 @@ impl Running {
             city.towers.iter().enumerate().map(|(i, t)| (i, t.entry.clone(), t.seed, t.max_pages)).collect();
         // On a pool that leaves cores free for flying, and skipping work as soon as
         // we've moved on to another folder.
-        let (tx, fonts, live) = (self.tx.clone(), self.fonts.clone(), self.live_gen.clone());
+        // Pages baked before (and unchanged) come straight from the cache.
+        let (tx, fonts, live, cache) = (self.tx.clone(), self.fonts.clone(), self.live_gen.clone(), self.cache.clone());
         self.bake_pool.spawn(move || {
             jobs.into_par_iter().for_each(|(index, entry, seed, max_pages)| {
                 if live.load(Ordering::Relaxed) != generation {
                     return;
                 }
-                let pages = textgen::bake(&entry, seed, &fonts, max_pages);
-                let _ = tx.send(Msg::Baked { generation, index, pages });
+                let key = cache::key(&entry, seed, max_pages);
+                let (pages, cached) = match cache.get(key) {
+                    Some(packed) => (packed.iter().map(|p| p.unpack(textgen::mips_len())).collect(), true),
+                    None => {
+                        let pages = textgen::bake(&entry, seed, &fonts, max_pages);
+                        cache.put(key, pages.iter().map(cache::PackedPage::pack).collect());
+                        (pages, false)
+                    }
+                };
+                let _ = tx.send(Msg::Baked { generation, index, pages, cached });
             });
         });
-        log::info!("city: {} towers in {}x{}, {} face pages", city.towers.len(), city.cols, city.rows, city.layers());
+        log::info!(
+            "city: {} towers in {}x{}, {} face pages (page cache {:.0} MB)",
+            city.towers.len(),
+            city.cols,
+            city.rows,
+            city.layers(),
+            self.cache.megabytes()
+        );
         self.city = Some(city);
         self.path = path;
     }
@@ -447,6 +468,7 @@ impl Running {
             drives: self.drives.clone(),
             can_back: !self.history.is_empty(),
             can_up: self.path.parent().is_some(),
+            fps: self.fps,
             hover,
             selected,
             status,
@@ -517,6 +539,7 @@ impl ApplicationHandler for App {
             rx,
             fonts: Arc::new(textgen::Fonts::load()),
             pending: Vec::new(),
+            cache: cache::PageCache::default(),
             hud: hud::Hud::new(),
             drives: Vec::new(),
             message: None,

@@ -538,6 +538,11 @@ fn mip_chain(base: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Bytes in one page's full mip chain.
+pub fn mips_len() -> usize {
+    (0..MIP_LEVELS).map(|l| (mip_size(l).0 * mip_size(l).1) as usize).sum()
+}
+
 pub fn mip_size(level: u32) -> (u32, u32) {
     ((TEX_W >> level).max(1), (TEX_H >> level).max(1))
 }
