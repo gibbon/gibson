@@ -151,7 +151,7 @@ impl Camera {
         self.yaw += (self.target_yaw - self.yaw) * k;
         self.pitch += (self.target_pitch - self.pitch) * k;
         let yaw_rate = (self.yaw - prev_yaw) / dt;
-        let want = (yaw_rate * BANK_PER_TURN * 1.6).clamp(-BANK_MAX, BANK_MAX);
+        let want = (yaw_rate * BANK_PER_TURN * 1.25).clamp(-BANK_MAX, BANK_MAX);
         self.roll += (want - self.roll) * ease(BANK_EASE, dt);
     }
 

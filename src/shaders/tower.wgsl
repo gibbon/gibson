@@ -9,6 +9,10 @@ struct Globals {
     screen: vec4<f32>,  // w, h, 1/w, 1/h
     hl: vec4<f32>,      // hovered name: texture layer, on (1/0); z = preview effect
     hl_rect: vec4<f32>, // its box on the page: u0, v0, u1, v1
+    th0: vec4<f32>,     // theme: glass alpha, edge gain, text gain, colour-by-type
+    th1: vec4<f32>,     // theme: floor trace rgb, floor gain
+    th2: vec4<f32>,     // theme: floor lane rgb, -
+    th3: vec4<f32>,     // theme: edge rgb, edge mix
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var faces: texture_2d_array<f32>;
@@ -225,15 +229,17 @@ fn fs(i: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let hover = i.body_col.a;
     let face_k = select(0.18, 1.0, front);                     // text bleeding through from behind is dimmer
     var tcol = i.text_col.rgb;
-    if (top) { tcol = mix(tcol, vec3<f32>(0.24, 0.91, 0.78), 0.6); } // tops read teal from above
+    if (top) { tcol = mix(tcol, vec3<f32>(0.24, 0.91, 0.78), 0.6 * g.th0.w); } // tops read teal from above
+    let ecol = mix(tcol, g.th3.rgb * max(max(tcol.r, tcol.g), tcol.b), g.th3.w); // theme's edge colour, as bright
 
-    var emissive = tcol * (text * 1.05 * face_k * (1.0 + sweep) + edge * (0.7 + hover) + base_glow * 0.6);
+    var emissive = tcol * (text * 1.05 * g.th0.z * face_k * (1.0 + sweep) + base_glow * 0.6)
+                 + ecol * edge * (0.7 + hover) * g.th0.y;
     emissive += vec3<f32>(0.75, 0.38, 1.0) * text * hover * 1.2 * face_k;   // hovered: magenta lift
     emissive = mix(emissive, vec3<f32>(1.0, 0.7, 0.26) * (0.3 + text * 2.4) * face_k, hl);
 
     emissive = mix(emissive, pic * 1.1 * face_k, pic_mask);
 
-    var alpha = select(0.25, 0.5, front); // darker glass in front = more contrast
+    var alpha = min(select(0.25, 0.5, front) * g.th0.x, 0.92); // darker glass in front = more contrast
     alpha = mix(alpha, select(0.3, 0.88, front), pic_mask);
     var body = i.body_col.rgb * (1.0 + hover * 0.8);
 

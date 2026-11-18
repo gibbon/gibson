@@ -7,6 +7,12 @@ struct Globals {
     city: vec4<f32>,    // origin x, origin z, cell size, city radius
     haze: vec4<f32>,
     screen: vec4<f32>,
+    hl: vec4<f32>,
+    hl_rect: vec4<f32>,
+    th0: vec4<f32>,     // theme: glass alpha, edge gain, text gain, colour-by-type
+    th1: vec4<f32>,     // theme: floor trace rgb, floor gain
+    th2: vec4<f32>,     // theme: floor lane rgb, -
+    th3: vec4<f32>,     // theme: edge rgb, edge mix
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 
@@ -98,10 +104,11 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
     let sz = fract(p.y * 0.012 + t * 0.5 + floor(rel.x) * 0.61);
     let streak = lane.x * smoothstep(0.08, 0.0, abs(sx - 0.5)) + lane.y * smoothstep(0.08, 0.0, abs(sz - 0.5));
 
-    let trace_col = vec3<f32>(0.36, 0.25, 0.91) * 1.6;
-    let pad_col = vec3<f32>(0.64, 0.55, 1.0) * 1.6;
-    let pulse_col = vec3<f32>(0.85, 1.0, 1.0) * 3.0;
-    let lane_col = vec3<f32>(0.30, 0.55, 1.0) * 1.4;
+    // Colours from the theme.
+    let trace_col = g.th1.rgb * 1.6;
+    let pad_col = mix(g.th1.rgb, vec3<f32>(1.0), 0.35) * 1.6;
+    let pulse_col = mix(g.th2.rgb, vec3<f32>(1.0), 0.65) * 3.0;
+    let lane_col = g.th2.rgb * 1.4;
 
     // Kept dim so the board reads as background; only pulses and streaks get bright.
     var col = trace_col * (fine.x * 0.18 + coarse.x * 0.35)
@@ -109,6 +116,8 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
             + pulse_col * (fine.y + coarse.y) * 0.6
             + lane_col * max(lane.x, lane.y) * 0.5
             + pulse_col * streak * 0.9;
+
+    col *= g.th1.w;
 
     // Calm the board outside the city, and fade with distance (haze, then black).
     let city_r = g.city.w;

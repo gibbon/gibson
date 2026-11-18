@@ -9,11 +9,12 @@ pub struct Settings {
     pub tower_fx: usize,  // effect on tower previews
     pub viewer_fx: usize, // effect in the media viewer
     pub volume: u32,      // viewer sound, percent
+    pub theme: usize,     // colour scheme
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { tower_fx: 1, viewer_fx: 1, volume: 80 } // hologram
+        Settings { tower_fx: 1, viewer_fx: 1, volume: 80, theme: 0 } // hologram, neon
     }
 }
 
@@ -45,6 +46,7 @@ pub fn load() -> Settings {
             "tower_fx" => s.tower_fx = n % crate::viewer::EFFECTS.len(),
             "viewer_fx" => s.viewer_fx = n % crate::viewer::EFFECTS.len(),
             "volume" => s.volume = (n as u32).min(100),
+            "theme" => s.theme = n % crate::theme::THEMES.len(),
             _ => {}
         }
     }
@@ -53,7 +55,10 @@ pub fn load() -> Settings {
 
 pub fn save(s: &Settings) {
     let Some(f) = file() else { return };
-    let text = format!("# Gibson settings\ntower_fx={}\nviewer_fx={}\nvolume={}\n", s.tower_fx, s.viewer_fx, s.volume);
+    let text = format!(
+        "# Gibson settings\ntower_fx={}\nviewer_fx={}\nvolume={}\ntheme={}\n",
+        s.tower_fx, s.viewer_fx, s.volume, s.theme
+    );
     let r = f.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&f, text));
     if let Err(e) = r {
         log::warn!("can't save settings to {}: {e}", f.display());

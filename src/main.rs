@@ -17,6 +17,7 @@ mod preview;
 mod render;
 mod settings;
 mod textgen;
+mod theme;
 mod viewer;
 
 use camera::{Camera, FlyInput};
@@ -449,6 +450,7 @@ impl Running {
                 hud::HudAction::CloseViewer => self.viewer = None,
                 hud::HudAction::TowerFx => self.step_tower_fx(1),
                 hud::HudAction::AutoFly => self.toggle_autofly(),
+                hud::HudAction::Theme => self.step_theme(1),
             }
             return;
         }
@@ -682,6 +684,16 @@ impl Running {
         [KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]
             .iter()
             .any(|k| self.keys.contains(k))
+    }
+
+    /// C / Shift+C / the THEME chip: the next colour scheme.
+    fn step_theme(&mut self, by: i32) {
+        let n = theme::THEMES.len() as i32;
+        let k = (self.settings.theme as i32 + by).rem_euclid(n) as usize;
+        self.settings.theme = k;
+        self.renderer.theme = k;
+        settings::save(&self.settings);
+        self.say(&format!("THEME: {}", theme::THEMES[k].name), false);
     }
 
     /// P / the AUTOFLY chip: fly itself down the streets, or stop.
@@ -1005,6 +1017,7 @@ impl Running {
             filter: self.filter.clone(),
             tower_fx: self.settings.tower_fx,
             autofly: self.autofly.is_some(),
+            theme: theme::THEMES[self.settings.theme % theme::THEMES.len()].name,
             viewer: self.viewer.as_ref().map(|v| hud::ViewerHud {
                 name: v.path().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 index: v.index,
@@ -1157,6 +1170,7 @@ impl ApplicationHandler for App {
         s.settings = settings::load();
         s.effect = s.settings.viewer_fx;
         s.renderer.tower_fx = s.settings.tower_fx as u32;
+        s.renderer.theme = s.settings.theme;
         let (gw, gh, gpx) = textgen::glyph_strip(&s.fonts);
         s.renderer.set_glyph_atlas(gw, gh, &gpx);
         s.view_on_load = self.start_file.take();
@@ -1223,6 +1237,10 @@ impl ApplicationHandler for App {
                                 KeyCode::KeyR if !event.repeat => s.reveal(),
                                 KeyCode::KeyV if !event.repeat => s.view_target(),
                                 KeyCode::KeyP if !event.repeat => s.toggle_autofly(),
+                                KeyCode::KeyC if !event.repeat && !s.command_held() => {
+                                    let back = s.keys.contains(&KeyCode::ShiftLeft) || s.keys.contains(&KeyCode::ShiftRight);
+                                    s.step_theme(if back { -1 } else { 1 });
+                                }
                                 KeyCode::KeyT if !event.repeat => {
                                     let back = s.keys.contains(&KeyCode::ShiftLeft) || s.keys.contains(&KeyCode::ShiftRight);
                                     s.step_tower_fx(if back { -1 } else { 1 });

@@ -14,7 +14,6 @@ const HDR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const BLOOM_LEVELS: usize = 6;
 const BLOOM_THRESHOLD: f32 = 1.2;
-const BLOOM_STRENGTH: f32 = 0.45;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -26,6 +25,10 @@ pub struct Globals {
     screen: [f32; 4],
     hl: [f32; 4],
     hl_rect: [f32; 4],
+    th0: [f32; 4],
+    th1: [f32; 4],
+    th2: [f32; 4],
+    th3: [f32; 4],
 }
 
 /// The media viewer, for this frame: which effect, the time, how far open (0..1),
@@ -107,6 +110,7 @@ pub struct Renderer {
     face_capacity: u32,
     pub max_face_layers: u32,
     pub tower_fx: u32, // effect on tower previews (same list as the viewer)
+    pub theme: usize,  // colour scheme (theme::THEMES)
     box_vb: wgpu::Buffer,
     inst_buf: wgpu::Buffer,
 
@@ -549,6 +553,7 @@ impl Renderer {
             face_capacity,
             max_face_layers,
             tower_fx: 1,
+            theme: 0,
             box_vb,
             inst_buf,
             floor_pipe,
@@ -768,6 +773,7 @@ impl Renderer {
             _ => return,
         };
         let out_view = frame.texture.create_view(&Default::default());
+        let th = &crate::theme::THEMES[self.theme % crate::theme::THEMES.len()];
 
         // Globals
         let (origin, radius) = city
@@ -777,17 +783,21 @@ impl Renderer {
             view_proj: view_proj.to_cols_array_2d(),
             cam: [cam.x, cam.y, cam.z, time],
             city: [origin.x, origin.y, crate::city::CELL, radius],
-            haze: [0.06, 0.19, 0.63, 0.0],
+            haze: [th.haze[0], th.haze[1], th.haze[2], 0.0],
             screen: [self.config.width as f32, self.config.height as f32, 0.0, 0.0],
             hl: [hl.map_or(0.0, |h| h.layer as f32), hl.map_or(0.0, |_| 1.0), self.tower_fx as f32, 0.0],
             hl_rect: hl.map_or([0.0; 4], |h| h.rect),
+            th0: [th.glass_alpha, th.edge_gain, th.text_gain, th.kind_tint],
+            th1: [th.floor_trace[0], th.floor_trace[1], th.floor_trace[2], th.floor_gain],
+            th2: [th.floor_lane[0], th.floor_lane[1], th.floor_lane[2], 0.0],
+            th3: [th.edge[0], th.edge[1], th.edge[2], th.edge_mix],
         };
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
         self.queue.write_buffer(
             &self.composite_pass.params,
             0,
             bytemuck::bytes_of(&PostParams {
-                texel: [1.0 / self.hdr.w as f32, 1.0 / self.hdr.h as f32, BLOOM_STRENGTH, time],
+                texel: [1.0 / self.hdr.w as f32, 1.0 / self.hdr.h as f32, th.bloom, time],
             }),
         );
 
@@ -797,7 +807,7 @@ impl Renderer {
             let mut order: Vec<usize> = (0..c.towers.len()).filter(|&i| c.towers[i].layer.is_some() && c.towers[i].shown > 0.01).collect();
             let dist = |i: usize| (c.towers[i].base + glam::Vec3::Y * c.towers[i].size.y * 0.5).distance_squared(cam);
             order.sort_by(|&a, &b| dist(b).total_cmp(&dist(a)));
-            instances = order.iter().map(|&i| instance_of(&c.towers[i])).collect();
+            instances = order.iter().map(|&i| instance_of(&c.towers[i], th)).collect();
             if !instances.is_empty() {
                 self.queue.write_buffer(&self.inst_buf, 0, bytemuck::cast_slice(&instances));
             }
@@ -980,7 +990,7 @@ fn bind_faces(
     })
 }
 
-fn instance_of(t: &crate::city::Tower) -> Instance {
+fn instance_of(t: &crate::city::Tower, th: &crate::theme::Theme) -> Instance {
     // Text colour by kind (HDR multiplier applied in the shader); bodies are deep tints.
     let (text, body) = match t.kind {
         Kind::Folder => ([0.28, 0.91, 1.0], [0.055, 0.165, 0.415]),
@@ -989,6 +999,11 @@ fn instance_of(t: &crate::city::Tower) -> Instance {
         Kind::Binary => ([1.0, 0.55, 0.22], [0.30, 0.10, 0.04]),
         Kind::Other => ([0.55, 0.62, 1.0], [0.08, 0.10, 0.35]),
     };
+    // Theme: how much colour comes from the file type, and how lit this tower is.
+    let towards = |a: [f32; 3], b: [f32; 3], k: f32| [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+    let lit = crate::theme::lit(t.seed, th.lit_var);
+    let text = towards(text, th.text, 1.0 - th.kind_tint).map(|c| c * lit);
+    let body = towards(body, th.body, 1.0 - th.kind_tint);
     // Selected tower: text and glass shift to amber.
     let k = t.select.clamp(0.0, 1.0);
     let mix = |a: [f32; 3], b: [f32; 3], k: f32| [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
@@ -1136,7 +1151,7 @@ impl PostCtx<'_> {
         let bright = self.pass(hdr, BLOOM_THRESHOLD, None);
         let down = (1..bloom.len()).map(|i| self.pass(&bloom[i - 1], 0.0, None)).collect();
         let up = (1..bloom.len()).map(|i| self.pass(&bloom[i], 0.0, None)).collect();
-        let composite = self.pass(hdr, BLOOM_STRENGTH, Some(&bloom[0].view));
+        let composite = self.pass(hdr, 0.45, Some(&bloom[0].view)); // strength: set per frame from the theme
         (bright, down, up, composite)
     }
 }

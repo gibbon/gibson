@@ -42,6 +42,7 @@ pub enum HudAction {
     CloseViewer,
     TowerFx,             // next effect on the tower previews
     AutoFly,             // fly itself / stop
+    Theme,               // next colour scheme
 }
 
 /// The media viewer's overlay.
@@ -79,6 +80,7 @@ pub struct HudState {
     pub filter: Vec<Cat>,                // shown types (empty = all)
     pub tower_fx: usize,                 // effect on tower previews
     pub autofly: bool,                   // flying itself
+    pub theme: &'static str,             // colour scheme name
     pub viewer: Option<ViewerHud>,
     pub hover: Option<HoverInfo>,
     pub selected: Option<(String, PathBuf, bool)>, // clicked tower: name, path, is folder
@@ -342,6 +344,17 @@ impl Hud {
                 self.frame(ar, CYAN, if st.autofly || hot { 1.0 } else { 0.6 });
                 self.text(&fonts.mono, small, (ar.x + u(7.0)) as f32, by, af, if st.autofly { INK } else { CYAN }, 1.0);
                 self.hits.push((ar, HudAction::AutoFly));
+            }
+            // THEME, left of that.
+            let tl = format!("THEME  {}  C", st.theme);
+            let tw2 = text_width(&fonts.mono, small, &tl).ceil() as i32;
+            let tr = Rect { x: ar.x - tw2 - u(24.0), y: r.y, w: tw2 + u(14.0), h: r.h };
+            if tr.x > x + u(10.0) {
+                let hot = st.hot == Some(self.hits.len());
+                self.fill(tr, SEARCH, if hot { 0.25 } else { 0.08 });
+                self.frame(tr, SEARCH, if hot { 1.0 } else { 0.6 });
+                self.text(&fonts.mono, small, (tr.x + u(7.0)) as f32, by, &tl, SEARCH, 1.0);
+                self.hits.push((tr, HudAction::Theme));
             }
             below = bar_h + strip_h;
         }
@@ -685,6 +698,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("DRAG (EITHER BUTTON)", "look around"),
         ("MOUSE WHEEL", "flying speed"),
         ("P", "fly itself (any key stops)"),
+        ("C  /  SHIFT + C", "colour scheme"),
     ]),
     ("TOWERS", &[
         ("CLICK", "fly to a tower (selects it, amber)"),
