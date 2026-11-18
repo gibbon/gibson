@@ -40,6 +40,7 @@ pub enum HudAction {
     Effect(usize),       // viewer: pick an effect
     PlayPause,           // viewer: pause / play the video
     CloseViewer,
+    TowerFx,             // next effect on the tower previews
 }
 
 /// The media viewer's overlay.
@@ -74,6 +75,7 @@ pub struct HudState {
     pub search_filter: bool,             // search hides non-matches
     pub cats: Vec<(Cat, usize)>,         // file types in this folder, with counts
     pub filter: Vec<Cat>,                // shown types (empty = all)
+    pub tower_fx: usize,                 // effect on tower previews
     pub viewer: Option<ViewerHud>,
     pub hover: Option<HoverInfo>,
     pub selected: Option<(String, PathBuf, bool)>, // clicked tower: name, path, is folder
@@ -309,6 +311,17 @@ impl Hud {
                 self.text(&fonts.mono, small, (r.x + u(7.0)) as f32, by, &label, if on { INK } else { CYAN }, 1.0);
                 self.hits.push((r, HudAction::Filter(cat)));
                 x += r.w + u(6.0);
+            }
+            // Right end: which effect the tower previews use (click or T for the next).
+            let fx = format!("TOWER FX  {}  T", crate::viewer::EFFECTS[st.tower_fx % crate::viewer::EFFECTS.len()]);
+            let tw = text_width(&fonts.mono, small, &fx).ceil() as i32;
+            let r = Rect { x: w - tw - u(30.0), y: bar_h + u(5.0), w: tw + u(14.0), h: strip_h - u(10.0) };
+            if r.x > x + u(10.0) {
+                let hot = st.hot == Some(self.hits.len());
+                self.fill(r, AMBER, if hot { 0.25 } else { 0.1 });
+                self.frame(r, AMBER, if hot { 1.0 } else { 0.7 });
+                self.text(&fonts.mono, small, (r.x + u(7.0)) as f32, by, &fx, AMBER, 1.0);
+                self.hits.push((r, HudAction::TowerFx));
             }
             below = bar_h + strip_h;
         }
@@ -656,6 +669,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("V  /  DOUBLE-CLICK", "open the full picture or video"),
         ("SPACE  /  LEFT RIGHT", "pause, jump 5 s (shift: 30 s)"),
         ("E  /  1-6", "change the effect"),
+        ("T  /  SHIFT + T", "effect on the towers' previews"),
         ("[  ]", "previous / next in the folder"),
     ]),
     ("HELP", &[("?  /  F1", "show or hide this")]),

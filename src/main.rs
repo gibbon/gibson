@@ -10,6 +10,7 @@ mod hud;
 mod nav;
 mod preview;
 mod render;
+mod settings;
 mod textgen;
 mod viewer;
 
@@ -94,6 +95,7 @@ struct Running {
     search_filter: bool,     // search hides non-matches (live) instead of dimming
     viewer: Option<viewer::Viewer>,
     effect: usize,           // viewer effect, remembered between pictures
+    settings: settings::Settings,
     scrub_drag: Option<f32>, // dragging the viewer's timeline: where (0..1)
     view_on_load: Option<PathBuf>, // started with a file: view it once its folder is up
     search: Option<String>,  // search box open, with its text
@@ -431,6 +433,7 @@ impl Running {
                     }
                 }
                 hud::HudAction::CloseViewer => self.viewer = None,
+                hud::HudAction::TowerFx => self.step_tower_fx(1),
             }
             return;
         }
@@ -530,6 +533,18 @@ impl Running {
         if let Some(v) = &mut self.viewer {
             v.effect = self.effect;
         }
+        self.settings.viewer_fx = self.effect;
+        settings::save(&self.settings);
+    }
+
+    /// The effect on every tower's picture / video preview (T, Shift+T, or the strip button).
+    fn step_tower_fx(&mut self, by: i32) {
+        let n = viewer::EFFECTS.len() as i32;
+        let fx = (self.settings.tower_fx as i32 + by).rem_euclid(n) as usize;
+        self.settings.tower_fx = fx;
+        self.renderer.tower_fx = fx as u32;
+        settings::save(&self.settings);
+        self.say(&format!("TOWER PREVIEWS: {}", viewer::EFFECTS[fx]), false);
     }
 
     /// Keys while the viewer is open. All are consumed (no flying).
@@ -920,6 +935,7 @@ impl Running {
             search_filter: self.search_filter,
             cats: self.city.as_ref().map(|c| c.cats.clone()).unwrap_or_default(),
             filter: self.filter.clone(),
+            tower_fx: self.settings.tower_fx,
             viewer: self.viewer.as_ref().map(|v| hud::ViewerHud {
                 name: v.path().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 index: v.index,
@@ -1039,6 +1055,7 @@ impl ApplicationHandler for App {
             search_filter: false,
             viewer: None,
             effect: 1,
+            settings: settings::Settings::default(),
             scrub_drag: None,
             view_on_load: None,
             search: None,
@@ -1055,6 +1072,9 @@ impl ApplicationHandler for App {
             city_since: now,
             stuck_logged: false,
         };
+        s.settings = settings::load();
+        s.effect = s.settings.viewer_fx;
+        s.renderer.tower_fx = s.settings.tower_fx as u32;
         let (gw, gh, gpx) = textgen::glyph_strip(&s.fonts);
         s.renderer.set_glyph_atlas(gw, gh, &gpx);
         s.view_on_load = self.start_file.take();
@@ -1109,6 +1129,10 @@ impl ApplicationHandler for App {
                                 }
                                 KeyCode::KeyR if !event.repeat => s.reveal(),
                                 KeyCode::KeyV if !event.repeat => s.view_target(),
+                                KeyCode::KeyT if !event.repeat => {
+                                    let back = s.keys.contains(&KeyCode::ShiftLeft) || s.keys.contains(&KeyCode::ShiftRight);
+                                    s.step_tower_fx(if back { -1 } else { 1 });
+                                }
                                 KeyCode::Backspace if !event.repeat => s.go_up(),
                                 KeyCode::BrowserBack if !event.repeat => s.go_back(),
                                 KeyCode::ArrowLeft

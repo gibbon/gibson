@@ -106,6 +106,7 @@ pub struct Renderer {
     preview_view: wgpu::TextureView,
     face_capacity: u32,
     pub max_face_layers: u32,
+    pub tower_fx: u32, // effect on tower previews (same list as the viewer)
     box_vb: wgpu::Buffer,
     inst_buf: wgpu::Buffer,
 
@@ -227,6 +228,7 @@ impl Renderer {
                 tex_entry(0, wgpu::TextureViewDimension::D2Array),
                 sampler_entry(1),
                 tex_entry(2, wgpu::TextureViewDimension::D2Array),
+                tex_entry(3, wgpu::TextureViewDimension::D2),
             ],
         });
         let face_capacity = FACE_LAYERS_MIN.min(max_face_layers);
@@ -245,7 +247,9 @@ impl Renderer {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
         });
-        let (faces_tex, faces_bind) = make_faces(&device, &faces_layout, &faces_sampler, face_capacity, &preview_view);
+        let glyph_view = make_viewer_tex(&device, 1, 1, wgpu::TextureFormat::R8Unorm).1;
+        let faces_tex = make_faces(&device, face_capacity);
+        let faces_bind = bind_faces(&device, &faces_layout, &faces_sampler, &faces_tex, &preview_view, &glyph_view);
 
         // ── Geometry ─────────────────────────────────────────────────────────
         let box_vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -524,7 +528,6 @@ impl Renderer {
             ..Default::default()
         });
         let viewer_img = make_viewer_tex(&device, 1, 1, wgpu::TextureFormat::Rgba8UnormSrgb);
-        let glyph_view = make_viewer_tex(&device, 1, 1, wgpu::TextureFormat::R8Unorm).1;
         let viewer_bind = make_viewer_bind(&device, &viewer_layout, &viewer_buf, &viewer_img.1, &viewer_sampler, &glyph_view);
 
         let (hdr, depth, bloom) = make_targets(&device, config.width, config.height);
@@ -545,6 +548,7 @@ impl Renderer {
             preview_view,
             face_capacity,
             max_face_layers,
+            tower_fx: 1,
             box_vb,
             inst_buf,
             floor_pipe,
@@ -588,6 +592,18 @@ impl Renderer {
         );
         self.glyph_view = view;
         self.rebind_viewer();
+        self.rebind_faces();
+    }
+
+    fn rebind_faces(&mut self) {
+        self.faces_bind = bind_faces(
+            &self.device,
+            &self.faces_layout,
+            &self.faces_sampler,
+            &self.faces_tex,
+            &self.preview_view,
+            &self.glyph_view,
+        );
     }
 
     /// The viewer's picture (RGBA): an image, or the current video frame.
@@ -688,9 +704,8 @@ impl Renderer {
             return;
         }
         let cap = want.next_multiple_of(64).min(self.max_face_layers);
-        let (tex, bind) = make_faces(&self.device, &self.faces_layout, &self.faces_sampler, cap, &self.preview_view);
-        self.faces_tex = tex;
-        self.faces_bind = bind;
+        self.faces_tex = make_faces(&self.device, cap);
+        self.rebind_faces();
         self.face_capacity = cap;
         log::info!("face pages: {cap} layers ({} MB)", cap as u64 * TEX_W as u64 * TEX_H as u64 * 4 / 3 / 1_048_576);
     }
@@ -764,7 +779,7 @@ impl Renderer {
             city: [origin.x, origin.y, crate::city::CELL, radius],
             haze: [0.06, 0.19, 0.63, 0.0],
             screen: [self.config.width as f32, self.config.height as f32, 0.0, 0.0],
-            hl: [hl.map_or(0.0, |h| h.layer as f32), hl.map_or(0.0, |_| 1.0), 0.0, 0.0],
+            hl: [hl.map_or(0.0, |h| h.layer as f32), hl.map_or(0.0, |_| 1.0), self.tower_fx as f32, 0.0],
             hl_rect: hl.map_or([0.0; 4], |h| h.rect),
         };
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
@@ -927,13 +942,7 @@ fn make_viewer_bind(
     })
 }
 
-fn make_faces(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    sampler: &wgpu::Sampler,
-    layers: u32,
-    previews: &wgpu::TextureView,
-) -> (wgpu::Texture, wgpu::BindGroup) {
+fn make_faces(device: &wgpu::Device, layers: u32) -> wgpu::Texture {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("faces"),
         size: wgpu::Extent3d { width: TEX_W, height: TEX_H, depth_or_array_layers: layers.max(2) },
@@ -944,20 +953,31 @@ fn make_faces(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    let view = tex.create_view(&wgpu::TextureViewDescriptor {
+    tex
+}
+
+fn bind_faces(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    faces: &wgpu::Texture,
+    previews: &wgpu::TextureView,
+    glyphs: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    let view = faces.create_view(&wgpu::TextureViewDescriptor {
         dimension: Some(wgpu::TextureViewDimension::D2Array),
         ..Default::default()
     });
-    let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("faces"),
         layout,
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
             wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(previews) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(glyphs) },
         ],
-    });
-    (tex, bind)
+    })
 }
 
 fn instance_of(t: &crate::city::Tower) -> Instance {

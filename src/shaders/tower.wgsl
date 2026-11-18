@@ -7,13 +7,30 @@ struct Globals {
     city: vec4<f32>,    // origin x, origin z, cell size, city radius
     haze: vec4<f32>,    // rgb haze colour
     screen: vec4<f32>,  // w, h, 1/w, 1/h
-    hl: vec4<f32>,      // hovered name: texture layer, on (1/0), -, -
+    hl: vec4<f32>,      // hovered name: texture layer, on (1/0); z = preview effect
     hl_rect: vec4<f32>, // its box on the page: u0, v0, u1, v1
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var faces: texture_2d_array<f32>;
 @group(1) @binding(1) var samp: sampler;
 @group(1) @binding(2) var previews: texture_2d_array<f32>; // colour pictures / video frames
+@group(1) @binding(3) var glyphs: texture_2d<f32>;           // character strip (data mosaic)
+
+fn lum(c: vec3<f32>) -> f32 {
+    return dot(c, vec3<f32>(0.299, 0.587, 0.114));
+}
+
+fn thermal(l: f32) -> vec3<f32> {
+    let a = vec3<f32>(0.0, 0.0, 0.08);
+    let b = vec3<f32>(0.15, 0.0, 0.55);
+    let c = vec3<f32>(0.85, 0.05, 0.55);
+    let d = vec3<f32>(1.0, 0.55, 0.0);
+    let e = vec3<f32>(1.0, 1.0, 0.75);
+    if (l < 0.25) { return mix(a, b, l / 0.25); }
+    if (l < 0.5) { return mix(b, c, (l - 0.25) / 0.25); }
+    if (l < 0.75) { return mix(c, d, (l - 0.5) / 0.25); }
+    return mix(d, e, (l - 0.75) / 0.25);
+}
 
 fn hash(p: vec2<f32>) -> f32 {
     return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
@@ -103,37 +120,89 @@ fn fs(i: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     var pic = vec3<f32>(0.0);
     var pic_mask = 0.0;
     let pv = i.pv;
+    let fx = i32(g.hl.z + 0.5); // chosen effect: 0 clean, 1 hologram, 2 CRT, 3 thermal, 4 mosaic, 5 edges
     if (pv.x >= 0.0 && !top && tile < 0.5) {
         let pr = i.pv_rect;
         let in_pic = step(pr.x, puv.x) * step(puv.x, pr.z) * step(pr.y, puv.y) * step(puv.y, pr.w);
         if (in_pic > 0.5) {
             let box = pr.zw - pr.xy;
             var q = (puv - pr.xy) / box; // 0..1 across the picture
-            let tick = floor(t * 14.0);
-            // Now and then a fit; and always on a video's montage cuts (pv.w > 1).
-            let burst = max(step(0.84, hash(vec2<f32>(floor(t * 2.5), seed))), step(1.5, pv.w));
-            let band = floor(q.y * 36.0);
-            let jag = hash(vec2<f32>(band, tick + seed));
-            q.x += (jag - 0.5) * 0.12 * burst * step(0.55, jag) + (jag - 0.5) * 0.004;
-            let blk = hash(floor(q * vec2<f32>(8.0, 14.0)) + vec2<f32>(tick, seed));
-            q.x += 0.04 * burst * step(0.92, blk);
             let scale = pv.yz; // the part of the layer the picture fills
-            let uvq = clamp(q, vec2<f32>(0.0), vec2<f32>(1.0)) * scale;
             let ggx = gx / box * scale;
             let ggy = gy / box * scale;
-            let split = vec2<f32>((0.002 + 0.012 * burst) * (1.0 + min(pv.w, 1.0)) * scale.x, 0.0);
             let lay = i32(pv.x);
-            pic = vec3<f32>(
-                textureSampleGrad(previews, samp, uvq + split, lay, ggx, ggy).r,
-                textureSampleGrad(previews, samp, uvq, lay, ggx, ggy).g,
-                textureSampleGrad(previews, samp, uvq - split, lay, ggx, ggy).b);
-            let scan = 0.84 + 0.16 * sin(q.y * 560.0);
-            let flick = 0.9 + 0.1 * hash(vec2<f32>(tick, seed * 3.1));
-            let roll = exp(-abs(fract(q.y - t * 0.22 + seed) - 0.5) * 36.0);
-            pic = pic * scan * flick + vec3<f32>(0.45, 0.9, 1.0) * roll * 0.12;
-            pic *= 1.0 - 0.9 * step(0.95, hash(vec2<f32>(band, tick * 1.3 + seed))) * burst; // dropped rows
-            let lum = dot(pic, vec3<f32>(0.299, 0.587, 0.114));
-            pic = mix(pic, vec3<f32>(0.35, 0.85, 1.0) * lum * 1.4, 0.28); // glass-cyan cast
+            let tick = floor(t * 14.0);
+            // Tearing: hologram has fits now and then; every effect but clean
+            // glitches on a video montage's cuts (pv.w > 1).
+            var burst = step(1.5, pv.w);
+            if (fx == 1) { burst = max(burst, step(0.84, hash(vec2<f32>(floor(t * 2.5), seed)))); }
+            if (fx == 0) { burst = 0.0; }
+            let band = floor(q.y * 36.0);
+            let jag = hash(vec2<f32>(band, tick + seed));
+            q.x += (jag - 0.5) * 0.12 * burst * step(0.55, jag);
+            if (fx == 1) { q.x += (jag - 0.5) * 0.004; }
+            let blk = hash(floor(q * vec2<f32>(8.0, 14.0)) + vec2<f32>(tick, seed));
+            q.x += 0.04 * burst * step(0.92, blk);
+            let uvq = clamp(q, vec2<f32>(0.0), vec2<f32>(1.0)) * scale;
+            let base = textureSampleGrad(previews, samp, uvq, lay, ggx, ggy).rgb;
+
+            if (fx == 1) {
+                // Hologram: RGB split, scanlines, rolling band, flicker, cyan cast.
+                let split = vec2<f32>((0.002 + 0.012 * burst) * (1.0 + min(pv.w, 1.0)) * scale.x, 0.0);
+                pic = vec3<f32>(
+                    textureSampleGrad(previews, samp, uvq + split, lay, ggx, ggy).r,
+                    base.g,
+                    textureSampleGrad(previews, samp, uvq - split, lay, ggx, ggy).b);
+                pic *= (0.84 + 0.16 * sin(q.y * 560.0)) * (0.9 + 0.1 * hash(vec2<f32>(tick, seed * 3.1)));
+                pic += vec3<f32>(0.45, 0.9, 1.0) * exp(-abs(fract(q.y - t * 0.22 + seed) - 0.5) * 36.0) * 0.12;
+                pic = mix(pic, vec3<f32>(0.35, 0.85, 1.0) * lum(pic) * 1.4, 0.28);
+            } else if (fx == 2) {
+                // CRT: colour bleed, phosphor stripes, scanlines, vignette.
+                let bleed = vec2<f32>(0.004 * scale.x, 0.0);
+                pic = vec3<f32>(
+                    textureSampleGrad(previews, samp, uvq + bleed, lay, ggx, ggy).r,
+                    base.g,
+                    textureSampleGrad(previews, samp, uvq - bleed, lay, ggx, ggy).b);
+                let m = i32(floor(q.x * 300.0)) % 3;
+                var mask = vec3<f32>(0.72);
+                if (m == 0) { mask.r = 1.2; } else if (m == 1) { mask.g = 1.2; } else { mask.b = 1.2; }
+                let c = q * 2.0 - 1.0;
+                pic *= mask * (0.7 + 0.3 * abs(sin(q.y * 380.0))) * (1.0 - 0.4 * dot(c, c));
+            } else if (fx == 3) {
+                pic = thermal(clamp(lum(base) * 1.1, 0.0, 1.0));
+            } else if (fx == 4) {
+                // Data mosaic: the picture redrawn in characters.
+                let aspect = pv.z / max(pv.y, 1e-4); // picture height / width
+                let cell = vec2<f32>(1.0 / 46.0, 1.75 / 46.0 / max(aspect, 0.05));
+                let ci = floor(q / cell);
+                let centre = clamp((ci + 0.5) * cell, vec2<f32>(0.0), vec2<f32>(1.0));
+                let c = textureSampleLevel(previews, samp, centre * scale, lay, 3.0).rgb;
+                let l = clamp(pow(lum(c), 0.6) * 1.1, 0.0, 0.999);
+                let f = fract(q / cell);
+                let cov = textureSampleLevel(glyphs, samp, vec2<f32>((floor(l * 11.0) + f.x) / 11.0, f.y), 0.0).r;
+                let ink = mix(vec3<f32>(0.35, 0.95, 1.0) * l, c / max(lum(c), 0.05) * l, 0.6);
+                pic = ink * cov * 2.6 + c * 0.1;
+            } else if (fx == 5) {
+                // Edge glow: neon outlines on black.
+                let o = 1.5 / 512.0;
+                let s00 = lum(textureSampleGrad(previews, samp, uvq + vec2<f32>(-o, -o), lay, ggx, ggy).rgb);
+                let s10 = lum(textureSampleGrad(previews, samp, uvq + vec2<f32>(0.0, -o), lay, ggx, ggy).rgb);
+                let s20 = lum(textureSampleGrad(previews, samp, uvq + vec2<f32>(o, -o), lay, ggx, ggy).rgb);
+                let s01 = lum(textureSampleGrad(previews, samp, uvq + vec2<f32>(-o, 0.0), lay, ggx, ggy).rgb);
+                let s21 = lum(textureSampleGrad(previews, samp, uvq + vec2<f32>(o, 0.0), lay, ggx, ggy).rgb);
+                let s02 = lum(textureSampleGrad(previews, samp, uvq + vec2<f32>(-o, o), lay, ggx, ggy).rgb);
+                let s12 = lum(textureSampleGrad(previews, samp, uvq + vec2<f32>(0.0, o), lay, ggx, ggy).rgb);
+                let s22 = lum(textureSampleGrad(previews, samp, uvq + vec2<f32>(o, o), lay, ggx, ggy).rgb);
+                let ex = (s20 + 2.0 * s21 + s22) - (s00 + 2.0 * s01 + s02);
+                let ey = (s02 + 2.0 * s12 + s22) - (s00 + 2.0 * s10 + s20);
+                let e = clamp(length(vec2<f32>(ex, ey)) * 2.5, 0.0, 1.0);
+                pic = mix(vec3<f32>(0.2, 0.95, 1.0), vec3<f32>(1.0, 0.25, 0.85), q.y) * e * 1.3 + base * 0.06;
+            } else {
+                pic = base;
+            }
+            if (fx != 0) {
+                pic *= 1.0 - 0.9 * step(0.95, hash(vec2<f32>(band, tick * 1.3 + seed))) * burst; // dropped rows
+            }
             pic_mask = 1.0;
         }
     }
