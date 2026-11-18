@@ -68,30 +68,40 @@ fn fs(i: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let seed = i.misc.y;
     let top = face > 3.5;
 
-    // One texture width across the face; it repeats down tall towers, offset per face
-    // so neighbouring faces don't match. The header lands at the top of each face.
-    let tuv = vec2<f32>(i.fuv.x / fw, i.fuv.y / (fw * 2.0) + select(face * 0.37, 0.0, face < 0.5));
-    let text = textureSample(faces, samp, tuv, i32(i.misc.x)).r * i.misc.z;
+    // One page is a face wide and two faces wide tall. Pages run down the front face,
+    // then on around the tower (front → right → back → left), so tall towers keep
+    // reading through the real content; only towers taller than their content repeat.
+    let page_h = fw * 2.0;
+    let tv = i.fuv.y / page_h;
+    let tile = floor(tv);
+    let per_face = max(ceil(fh / page_h - 0.001), 1.0);
+    let pages = max(i.misc.w, 1.0);
+    let around = f32((4u - u32(face)) % 4u);      // face ids 0 +z, 1 −x, 2 −z, 3 +x
+    let page = select((around * per_face + tile) % pages, 0.0, top);
+    // Gradients from the continuous coordinate, so mips don't seam at page edges.
+    let cont = vec2<f32>(i.fuv.x / fw, tv);
+    let text = textureSampleGrad(faces, samp, vec2<f32>(cont.x, tv - tile), i32(i.misc.x + page),
+                                 dpdx(cont), dpdy(cont)).r * i.misc.z;
 
     // Edges: a crisp line plus a soft glow, the brightest thing on the glass.
     let d = min(min(i.fuv.x, fw - i.fuv.x), min(i.fuv.y, fh - i.fuv.y));
     let aa = max(fwidth(d), 1e-4);
-    let edge = (1.0 - smoothstep(0.05, 0.05 + aa * 1.5, d)) * 1.4 + exp(-d * 6.0) * 0.35;
+    let edge = (1.0 - smoothstep(0.05, 0.05 + aa * 1.5, d)) * 1.0 + exp(-d * 6.0) * 0.25;
 
     // Lit base where the tower meets the floor, and a highlight bar sweeping down.
     let base_glow = select(exp(-i.world.y * 0.9) * 1.6, 0.0, top);
     let sweep_pos = fract(t * 0.035 + seed * 0.13) * (fh + 20.0) - 10.0;
-    let sweep = exp(-abs(i.fuv.y - sweep_pos) * 1.2) * 0.5 * select(1.0, 0.0, top);
+    let sweep = exp(-abs(i.fuv.y - sweep_pos) * 1.2) * 0.25 * select(1.0, 0.0, top);
 
     let hover = i.body_col.a;
-    let face_k = select(0.4, 1.0, front);                     // text bleeding through from behind is dimmer
+    let face_k = select(0.18, 1.0, front);                     // text bleeding through from behind is dimmer
     var tcol = i.text_col.rgb;
     if (top) { tcol = mix(tcol, vec3<f32>(0.24, 0.91, 0.78), 0.6); } // tops read teal from above
 
-    var emissive = tcol * (text * 1.8 * face_k * (1.0 + sweep) + edge * (0.7 + hover) + base_glow * 0.6);
+    var emissive = tcol * (text * 1.05 * face_k * (1.0 + sweep) + edge * (0.7 + hover) + base_glow * 0.6);
     emissive += vec3<f32>(0.75, 0.38, 1.0) * text * hover * 1.2 * face_k;   // hovered: magenta lift
 
-    var alpha = 0.35 * face_k;
+    var alpha = select(0.25, 0.5, front); // darker glass in front = more contrast
     var body = i.body_col.rgb * (1.0 + hover * 0.8);
 
     // Distance haze: emissive fades to the haze colour, then everything to black.

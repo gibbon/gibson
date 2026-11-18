@@ -69,8 +69,7 @@ around the missing tools. It's not needed; remove it with
 
 Builds cleanly on Windows (MSVC, RTX 4070 / Vulkan, 120 fps). Screenshot the
 window via PowerShell CopyFromScreen to check the look.
-Git repo exists but has no commits: git user.name/email weren't set, so the
-milestone 1 commit is pending until the user sets them.
+Milestone 1 committed (968ee10). Git identity is set globally.
 
 ## Working style
 - Stop after each milestone and wait for the user to confirm it works.

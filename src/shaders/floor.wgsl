@@ -103,11 +103,12 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
     let pulse_col = vec3<f32>(0.85, 1.0, 1.0) * 3.0;
     let lane_col = vec3<f32>(0.30, 0.55, 1.0) * 1.4;
 
-    var col = trace_col * (fine.x * 0.55 + coarse.x * 0.9)
-            + pad_col * (fine.z * 0.5 + coarse.z * 0.9)
-            + pulse_col * (fine.y + coarse.y)
-            + lane_col * max(lane.x, lane.y)
-            + pulse_col * streak * 1.4;
+    // Kept dim so the board reads as background; only pulses and streaks get bright.
+    var col = trace_col * (fine.x * 0.18 + coarse.x * 0.35)
+            + pad_col * (fine.z * 0.15 + coarse.z * 0.35)
+            + pulse_col * (fine.y + coarse.y) * 0.6
+            + lane_col * max(lane.x, lane.y) * 0.5
+            + pulse_col * streak * 0.9;
 
     // Calm the board outside the city, and fade with distance (haze, then black).
     let city_r = g.city.w;

@@ -4,6 +4,10 @@ use crate::fs_scan::Entry;
 use glam::{Vec2, Vec3};
 
 pub const CELL: f32 = 26.0; // tower spacing; streets run along the cell boundaries
+pub const LAYER_BUDGET: u32 = 768; // face pages per city (~0.7 MB of GPU memory each)
+// Rough content per page, used to reserve pages (baking stops early if content runs out).
+const LINES_PER_PAGE: usize = 80;
+const HEX_BYTES_PER_PAGE: usize = 600;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Kind {
@@ -20,7 +24,10 @@ pub struct Tower {
     pub size: Vec3, // width, height, depth
     pub kind: Kind,
     pub seed: f32,
-    pub layer: Option<u32>, // texture-array layer once baked + uploaded
+    pub first_layer: u32,   // reserved texture-array layers: first_layer .. first_layer + max_pages
+    pub max_pages: u32,
+    pub pages: u32,         // pages actually baked
+    pub layer: Option<u32>, // = Some(first_layer) once baked + uploaded
     pub appear: f32,        // 0 → 1 fade-in after the texture arrives
     pub hover: f32,         // eased highlight
 }
@@ -31,6 +38,19 @@ impl Tower {
     }
     pub fn max(&self) -> Vec3 {
         Vec3::new(self.base.x + self.size.x / 2.0, self.size.y, self.base.z + self.size.z / 2.0)
+    }
+
+    /// Pages worth baking: enough to cover all four faces (a page is one face wide and
+    /// two faces wide tall), but no more than the real content fills.
+    fn wanted_pages(&self) -> u32 {
+        let per_face = (self.size.y / (self.size.x * 2.0) - 0.001).ceil().max(1.0) as u32;
+        let e = &self.entry;
+        let content = if !e.lines.is_empty() {
+            e.lines.len().div_ceil(LINES_PER_PAGE)
+        } else {
+            e.head.len().div_ceil(HEX_BYTES_PER_PAGE)
+        };
+        (content as u32).clamp(1, per_face * 4)
     }
 }
 
@@ -43,14 +63,19 @@ pub struct City {
 }
 
 impl City {
-    pub fn build(entries: Vec<Entry>) -> City {
+    /// Texture-array layers this city needs.
+    pub fn layers(&self) -> u32 {
+        self.towers.iter().map(|t| t.max_pages).sum()
+    }
+
+    pub fn build(entries: Vec<Entry>, layer_budget: u32) -> City {
         let n = entries.len().max(1);
         let cols = ((n as f32 * 0.8).sqrt().ceil() as usize).max(1);
         let rows = n.div_ceil(cols);
         let origin = Vec2::new(-((cols - 1) as f32) * CELL / 2.0, -((rows - 1) as f32) * CELL / 2.0);
         let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ n as u64);
 
-        let towers = entries
+        let mut towers: Vec<Tower> = entries
             .into_iter()
             .enumerate()
             .map(|(i, e)| {
@@ -73,12 +98,31 @@ impl City {
                     base: Vec3::new(origin.x + col as f32 * CELL, 0.0, origin.y + row as f32 * CELL) + jitter,
                     size: Vec3::new(w, h, w),
                     seed: rng.f32() * 100.0,
+                    first_layer: 0,
+                    max_pages: 1,
+                    pages: 0,
                     layer: None,
                     appear: 0.0,
                     hover: 0.0,
                 }
             })
             .collect();
+
+        // Share the page budget: trim the biggest towers first, everyone keeps one page.
+        for t in &mut towers {
+            t.max_pages = t.wanted_pages();
+        }
+        let mut total: u32 = towers.iter().map(|t| t.max_pages).sum();
+        while total > layer_budget.max(towers.len() as u32) {
+            let Some(big) = towers.iter_mut().filter(|t| t.max_pages > 1).max_by_key(|t| t.max_pages) else { break };
+            big.max_pages -= 1;
+            total -= 1;
+        }
+        let mut next = 0;
+        for t in &mut towers {
+            t.first_layer = next;
+            next += t.max_pages;
+        }
 
         City {
             towers,

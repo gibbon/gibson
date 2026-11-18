@@ -7,8 +7,10 @@ use std::time::SystemTime;
 
 pub const MAX_ENTRIES: usize = 240; // towers per city (also the texture-array size)
 const MAX_CHILD_PEEK: usize = 4000; // entries counted inside each subfolder
-const MAX_LINES: usize = 160; // names / text lines kept for a tower's faces
-const HEAD_BYTES: usize = 2048; // file bytes kept for hex-dump blocks
+const MAX_NAMES: usize = 2000; // child names kept for a folder tower's pages
+const MAX_TEXT_LINES: usize = 1500; // text-file lines kept
+const TEXT_BYTES: usize = 48 * 1024; // bytes read from text files
+const HEAD_BYTES: usize = 8 * 1024; // bytes read from other files for hex dumps
 
 #[derive(Clone, Debug)]
 pub struct Entry {
@@ -21,7 +23,18 @@ pub struct Entry {
     pub modified: Option<SystemTime>,
     pub lines: Vec<(String, bool)>, // (text, is_folder) — child names, or text-file lines
     pub head: Vec<u8>,              // files: first bytes
+    pub types: Vec<TypeStat>,       // folders: file types inside, biggest first
 }
+
+/// Files of one type inside a folder (`label` is the upper-case extension, or OTHER).
+#[derive(Clone, Debug)]
+pub struct TypeStat {
+    pub label: String,
+    pub count: usize,
+    pub bytes: u64,
+}
+
+const MAX_TYPES: usize = 6; // shown separately; the rest are folded into OTHER
 
 const TEXT_EXT: &[&str] = &[
     "txt", "md", "cs", "cpp", "c", "h", "hpp", "js", "ts", "tsx", "jsx", "py", "rs", "go", "java", "json",
@@ -78,7 +91,9 @@ fn read_dir_entry(p: &Path) -> Entry {
         modified: fs::metadata(p).and_then(|m| m.modified()).ok(),
         lines: Vec::new(),
         head: Vec::new(),
+        types: Vec::new(),
     };
+    let mut by_ext: std::collections::HashMap<String, (usize, u64)> = Default::default();
     if let Ok(rd) = fs::read_dir(p) {
         let mut sub_dirs = Vec::new();
         let mut sub_files = Vec::new();
@@ -90,9 +105,18 @@ fn read_dir_entry(p: &Path) -> Entry {
             e.child_count += 1;
             let is_dir = item.file_type().map(|t| t.is_dir()).unwrap_or(false);
             if !is_dir {
-                e.size += item.metadata().map(|m| m.len()).unwrap_or(0);
+                let len = item.metadata().map(|m| m.len()).unwrap_or(0);
+                e.size += len;
+                let ext = Path::new(&item.file_name())
+                    .extension()
+                    .map(|x| x.to_string_lossy().to_uppercase())
+                    .filter(|x| x.len() <= 6)
+                    .unwrap_or_else(|| "—".into());
+                let s = by_ext.entry(ext).or_default();
+                s.0 += 1;
+                s.1 += len;
             }
-            if sub_dirs.len() + sub_files.len() < MAX_LINES {
+            if sub_dirs.len() + sub_files.len() < MAX_NAMES {
                 let n = item.file_name().to_string_lossy().into_owned();
                 if is_dir { sub_dirs.push(n) } else { sub_files.push(n) }
             }
@@ -102,7 +126,24 @@ fn read_dir_entry(p: &Path) -> Entry {
         e.lines.extend(sub_dirs.into_iter().map(|n| (n, true)));
         e.lines.extend(sub_files.into_iter().map(|n| (n, false)));
     }
+    e.types = type_stats(by_ext);
     e
+}
+
+/// Biggest types first (by bytes, then count); the tail folded into OTHER.
+fn type_stats(by_ext: std::collections::HashMap<String, (usize, u64)>) -> Vec<TypeStat> {
+    let mut v: Vec<TypeStat> =
+        by_ext.into_iter().map(|(label, (count, bytes))| TypeStat { label, count, bytes }).collect();
+    v.sort_by(|a, b| b.bytes.cmp(&a.bytes).then(b.count.cmp(&a.count)).then(a.label.cmp(&b.label)));
+    if v.len() > MAX_TYPES {
+        let rest = v.split_off(MAX_TYPES - 1);
+        v.push(TypeStat {
+            label: "OTHER".into(),
+            count: rest.iter().map(|t| t.count).sum(),
+            bytes: rest.iter().map(|t| t.bytes).sum(),
+        });
+    }
+    v
 }
 
 fn read_file_entry(p: &Path, len: u64) -> Entry {
@@ -116,18 +157,20 @@ fn read_file_entry(p: &Path, len: u64) -> Entry {
         modified: fs::metadata(p).and_then(|m| m.modified()).ok(),
         lines: Vec::new(),
         head: Vec::new(),
+        types: Vec::new(),
     };
-    if let Ok(mut f) = fs::File::open(p) {
-        let mut buf = vec![0u8; HEAD_BYTES.min(len as usize)];
-        if let Ok(n) = f.read(&mut buf) {
-            buf.truncate(n);
+    let ext = p.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let is_text = TEXT_EXT.contains(&ext.as_str());
+    if let Ok(f) = fs::File::open(p) {
+        let want = if is_text { TEXT_BYTES } else { HEAD_BYTES }.min(len as usize);
+        let mut buf = Vec::with_capacity(want);
+        if f.take(want as u64).read_to_end(&mut buf).is_ok() {
             e.head = buf;
         }
     }
-    let ext = p.extension().map(|x| x.to_string_lossy().to_lowercase()).unwrap_or_default();
-    if TEXT_EXT.contains(&ext.as_str()) && !e.head.is_empty() {
+    if is_text && !e.head.is_empty() {
         let text = String::from_utf8_lossy(&e.head);
-        for raw in text.lines().take(MAX_LINES) {
+        for raw in text.lines().take(MAX_TEXT_LINES) {
             let line: String = raw.replace('\t', "  ").chars().filter(|c| !c.is_control()).collect();
             let line = line.trim_end();
             if !line.is_empty() {

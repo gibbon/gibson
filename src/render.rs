@@ -12,8 +12,8 @@ use winit::window::Window;
 const HDR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const BLOOM_LEVELS: usize = 6;
-const BLOOM_THRESHOLD: f32 = 0.85;
-const BLOOM_STRENGTH: f32 = 0.9;
+const BLOOM_THRESHOLD: f32 = 1.2;
+const BLOOM_STRENGTH: f32 = 0.45;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -69,6 +69,10 @@ pub struct Renderer {
     globals_bind: wgpu::BindGroup,
     faces_tex: wgpu::Texture,
     faces_bind: wgpu::BindGroup,
+    faces_layout: wgpu::BindGroupLayout,
+    faces_sampler: wgpu::Sampler,
+    face_capacity: u32,
+    pub max_face_layers: u32,
     box_vb: wgpu::Buffer,
     inst_buf: wgpu::Buffer,
 
@@ -110,7 +114,10 @@ impl Renderer {
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("gibson"),
-                required_limits: wgpu::Limits { max_texture_array_layers: MAX_ENTRIES as u32, ..wgpu::Limits::default() }
+                required_limits: wgpu::Limits {
+                    max_texture_array_layers: adapter.limits().max_texture_array_layers.min(crate::city::LAYER_BUDGET),
+                    ..wgpu::Limits::default()
+                }
                     .using_resolution(adapter.limits()),
                 ..Default::default()
             })
@@ -150,21 +157,8 @@ impl Renderer {
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals_buf.as_entire_binding() }],
         });
 
-        // ── Tower face textures: one array layer per tower ───────────────────
-        let faces_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("faces"),
-            size: wgpu::Extent3d { width: TEX_W, height: TEX_H, depth_or_array_layers: MAX_ENTRIES as u32 },
-            mip_level_count: MIP_LEVELS,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::R8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let faces_view = faces_tex.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
+        // ── Tower face textures: one array layer per face page (resized per city) ─
+        let max_face_layers = device.limits().max_texture_array_layers;
         let faces_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("faces"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -182,14 +176,8 @@ impl Renderer {
                 sampler_entry(1),
             ],
         });
-        let faces_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("faces"),
-            layout: &faces_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&faces_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&faces_sampler) },
-            ],
-        });
+        let face_capacity = FACE_LAYERS_MIN.min(max_face_layers);
+        let (faces_tex, faces_bind) = make_faces(&device, &faces_layout, &faces_sampler, face_capacity);
 
         // ── Geometry ─────────────────────────────────────────────────────────
         let box_vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -374,6 +362,10 @@ impl Renderer {
             globals_bind,
             faces_tex,
             faces_bind,
+            faces_layout,
+            faces_sampler,
+            face_capacity,
+            max_face_layers,
             box_vb,
             inst_buf,
             floor_pipe,
@@ -421,6 +413,21 @@ impl Renderer {
         self.down_passes = d;
         self.up_passes = u;
         self.composite_pass = c;
+    }
+
+    /// Makes room for `layers` face pages. Grows only (and drops what was there), so
+    /// call it before uploading a new city's pages.
+    pub fn reserve_face_layers(&mut self, layers: u32) {
+        let want = layers.min(self.max_face_layers);
+        if want <= self.face_capacity {
+            return;
+        }
+        let cap = want.next_multiple_of(64).min(self.max_face_layers);
+        let (tex, bind) = make_faces(&self.device, &self.faces_layout, &self.faces_sampler, cap);
+        self.faces_tex = tex;
+        self.faces_bind = bind;
+        self.face_capacity = cap;
+        log::info!("face pages: {cap} layers ({} MB)", cap as u64 * TEX_W as u64 * TEX_H as u64 * 4 / 3 / 1_048_576);
     }
 
     /// Uploads a baked face texture (full mip chain) into an array layer.
@@ -549,6 +556,39 @@ impl Renderer {
     }
 }
 
+const FACE_LAYERS_MIN: u32 = 256;
+
+fn make_faces(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sampler: &wgpu::Sampler,
+    layers: u32,
+) -> (wgpu::Texture, wgpu::BindGroup) {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("faces"),
+        size: wgpu::Extent3d { width: TEX_W, height: TEX_H, depth_or_array_layers: layers.max(2) },
+        mip_level_count: MIP_LEVELS,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
+    let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("faces"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+        ],
+    });
+    (tex, bind)
+}
+
 fn instance_of(t: &crate::city::Tower) -> Instance {
     // Text colour by kind (HDR multiplier applied in the shader); bodies are deep tints.
     let (text, body) = match t.kind {
@@ -564,7 +604,7 @@ fn instance_of(t: &crate::city::Tower) -> Instance {
         size: [t.size.x, t.size.y * (0.35 + 0.65 * ease), t.size.z], // rises as it appears
         text_col: [text[0], text[1], text[2], ease],
         body_col: [body[0], body[1], body[2], t.hover],
-        misc: [t.layer.unwrap_or(0) as f32, t.seed, 1.0, 0.0],
+        misc: [t.layer.unwrap_or(0) as f32, t.seed, 1.0, t.pages.max(1) as f32],
     }
 }
 

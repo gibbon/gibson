@@ -81,7 +81,7 @@ fn fs_composite(i: VOut) -> @location(0) vec4<f32> {
     let scene = textureSample(src, samp, i.uv).rgb;
     let glow = textureSample(bloom, samp, i.uv).rgb;
     var c = scene + glow * pp.texel.z;
-    c = aces(c * 0.9);
+    c = aces(c * 0.8);
     // Vignette and a little film grain.
     let v = i.uv - 0.5;
     c *= 1.0 - dot(v, v) * 0.55;

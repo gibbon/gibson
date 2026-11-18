@@ -74,6 +74,26 @@ impl Canvas {
             self.plot(r.x + r.w - 1, y, v, r, false);
         }
     }
+    /// Fills `r` with one of a few greyscale patterns, so types tell apart without colour.
+    fn pattern(&mut self, r: Rect, style: usize, v: u8) {
+        for y in r.y..r.y + r.h {
+            for x in r.x..r.x + r.w {
+                let (lx, ly) = (x - r.x, y - r.y);
+                let on = match style % 6 {
+                    0 => true,                              // solid
+                    1 => (lx + ly) % 6 < 2,                 // diagonal hatch
+                    2 => lx % 2 == 0,                       // fine vertical lines
+                    3 => (lx / 3 + ly / 3) % 2 == 0,        // checker
+                    4 => ly % 3 == 0,                       // horizontal lines
+                    _ => lx % 4 < 2 && ly % 4 < 2,          // dots
+                };
+                if on {
+                    self.plot(x, y, v, r, false);
+                }
+            }
+        }
+    }
+
     /// Right-pointing triangle marker (the fonts don't have ▸).
     fn marker(&mut self, x: i32, y_mid: i32, size: i32, v: u8, clip: Rect) {
         for dx in 0..size {
@@ -124,9 +144,48 @@ fn fit(font: &Font, px: f32, text: &str, max_w: f32) -> String {
     s.into_iter().collect::<String>() + "…"
 }
 
-pub fn bake(e: &Entry, seed: f32, fonts: &Fonts) -> Vec<u8> {
-    let mut c = Canvas::new();
+/// Where we are in the entry's real content; carries on from page to page.
+struct Walk {
+    line: usize, // next name / text line
+    hex: usize,  // next byte offset for hex dumps
+    wrap: bool,  // single-page tower: loop the content to fill the page
+}
+
+impl Walk {
+    fn lines_left(&self, e: &Entry) -> bool {
+        self.line < e.lines.len()
+    }
+    fn hex_left(&self, e: &Entry) -> bool {
+        self.hex < e.head.len()
+    }
+    /// All the real content has been shown (hex is only filler when there are lines).
+    fn done(&self, e: &Entry) -> bool {
+        if !e.lines.is_empty() { !self.lines_left(e) } else { !self.hex_left(e) }
+    }
+}
+
+/// Bakes up to `max_pages` face pages (each a full mip chain). Page 0 is the tower's
+/// front page; later pages continue through the content where the last one stopped.
+pub fn bake(e: &Entry, seed: f32, fonts: &Fonts, max_pages: u32) -> Vec<Vec<u8>> {
     let mut rng = Rng(seed.to_bits() as u64 * 0x2545_F491_4F6C_DD1D + 7);
+    let mut walk = Walk { line: 0, hex: 0, wrap: max_pages <= 1 };
+    let mut pages = Vec::new();
+    for p in 0..max_pages.max(1) {
+        let mut c = Canvas::new();
+        if p == 0 {
+            front_page(&mut c, e, &mut rng, &mut walk, fonts);
+        } else {
+            next_page(&mut c, e, &mut rng, &mut walk, fonts);
+        }
+        pages.push(mip_chain(&c.px));
+        if walk.done(e) {
+            break;
+        }
+    }
+    pages
+}
+
+fn front_page(c: &mut Canvas, e: &Entry, rng: &mut Rng, walk: &mut Walk, fonts: &Fonts) {
     let full = Rect { x: 0, y: 0, w: TEX_W as i32, h: TEX_H as i32 };
     let m = 14; // margin
 
@@ -137,7 +196,7 @@ pub fn bake(e: &Entry, seed: f32, fonts: &Fonts) -> Vec<u8> {
         px -= 1.0;
     }
     let name = fit(&fonts.wide, px, &name, (TEX_W as i32 - 2 * m) as f32);
-    draw_text(&mut c, &fonts.wide, px, m as f32, 50.0, &name, 255, full, false);
+    draw_text(c, &fonts.wide, px, m as f32, 50.0, &name, 255, full, false);
 
     let status = if e.is_dir {
         format!(
@@ -150,7 +209,7 @@ pub fn bake(e: &Entry, seed: f32, fonts: &Fonts) -> Vec<u8> {
     } else {
         format!("FILE  {}  {}", format_size(e.size), format_date(e.modified))
     };
-    draw_text(&mut c, &fonts.mono, 17.0, m as f32, 80.0, &status, 190, full, false);
+    draw_text(c, &fonts.mono, 17.0, m as f32, 80.0, &status, 190, full, false);
     c.fill(Rect { x: m, y: 92, w: TEX_W as i32 - 2 * m, h: 2 }, 220);
 
     // ── Hero list (folders): child names right-aligned with ▸ markers ──────
@@ -162,7 +221,7 @@ pub fn bake(e: &Entry, seed: f32, fonts: &Fonts) -> Vec<u8> {
             let t = fit(&fonts.wide, 15.0, &text.to_uppercase(), (list.w - 40) as f32);
             let w = text_width(&fonts.wide, 15.0, &t);
             let right = (list.x + list.w - 22) as f32;
-            draw_text(&mut c, &fonts.wide, 15.0, right - w, ly, &t, if *is_dir { 255 } else { 175 }, list, false);
+            draw_text(c, &fonts.wide, 15.0, right - w, ly, &t, if *is_dir { 255 } else { 175 }, list, false);
             c.marker(right as i32 + 6, ly as i32 - 6, 10, 230, list);
             ly += 24.0;
         }
@@ -171,16 +230,123 @@ pub fn bake(e: &Entry, seed: f32, fonts: &Fonts) -> Vec<u8> {
         y += 8;
     }
 
-    // ── Mosaic body: blocks of real data ────────────────────────────────────
-    let body = Rect { x: m, y, w: TEX_W as i32 - 2 * m, h: TEX_H as i32 - y - m };
-    let mut blocks = Vec::new();
-    split(body, &mut rng, 0, &mut blocks);
-    let mut cursor = 0usize; // walks through e.lines across blocks
-    for b in blocks {
-        mosaic_block(&mut c, b, e, &mut rng, &mut cursor, fonts);
+    // ── File types (folders): what the folder is made of ────────────────────
+    if e.is_dir && !e.types.is_empty() {
+        y = type_graph(c, e, Rect { x: m, y, w: TEX_W as i32 - 2 * m, h: 0 }, fonts);
+        c.fill(Rect { x: m, y, w: TEX_W as i32 - 2 * m, h: 1 }, 150);
+        y += 8;
     }
 
-    mip_chain(&c.px)
+    // ── Mosaic body: blocks of real data ────────────────────────────────────
+    let body = Rect { x: m, y, w: TEX_W as i32 - 2 * m, h: TEX_H as i32 - y - m };
+    mosaic(c, body, e, rng, walk, fonts, 0.5);
+}
+
+/// A stylised breakdown of the folder's files by type: a stacked ribbon of shares,
+/// then one row per type with a patterned swatch, a segmented meter and the numbers.
+/// Shares are by bytes (by count if the files are all empty). Returns the y below it.
+fn type_graph(c: &mut Canvas, e: &Entry, area: Rect, fonts: &Fonts) -> i32 {
+    let full = Rect { x: 0, y: 0, w: TEX_W as i32, h: TEX_H as i32 };
+    let total_bytes: u64 = e.types.iter().map(|t| t.bytes).sum();
+    let total_count: usize = e.types.iter().map(|t| t.count).sum();
+    let share = |t: &crate::fs_scan::TypeStat| {
+        if total_bytes > 0 { t.bytes as f32 / total_bytes as f32 } else { t.count as f32 / total_count.max(1) as f32 }
+    };
+    let mut y = area.y + 16;
+
+    let title = if total_bytes > 0 { "FILE TYPES  /  BY SIZE" } else { "FILE TYPES  /  BY COUNT" };
+    draw_text(c, &fonts.mono, 14.0, area.x as f32, y as f32, title, 200, full, false);
+    let files = format!("{total_count} FILES");
+    let fw = text_width(&fonts.mono, 14.0, &files);
+    draw_text(c, &fonts.mono, 14.0, (area.x + area.w) as f32 - fw, y as f32, &files, 200, full, false);
+    y += 8;
+
+    // Stacked ribbon: every type's share side by side, framed.
+    let ribbon = Rect { x: area.x, y, w: area.w, h: 20 };
+    c.frame(ribbon, 210);
+    let inner_w = ribbon.w - 4;
+    let mut x = ribbon.x + 2;
+    for (i, t) in e.types.iter().enumerate() {
+        let last = i + 1 == e.types.len();
+        let w = if last { ribbon.x + 2 + inner_w - x } else { (share(t) * inner_w as f32).round() as i32 };
+        if w > 2 {
+            c.pattern(Rect { x, y: ribbon.y + 3, w: w - 2, h: ribbon.h - 6 }, i, 235);
+        }
+        x += w;
+    }
+    // Tick marks every 10% under the ribbon.
+    for k in 0..=10 {
+        let tx = ribbon.x + ribbon.w * k / 10;
+        c.fill(Rect { x: tx.min(ribbon.x + ribbon.w - 1), y: ribbon.y + ribbon.h + 2, w: 1, h: if k % 5 == 0 { 6 } else { 3 } }, 170);
+    }
+    y = ribbon.y + ribbon.h + 14;
+
+    // One row per type: swatch, label, segmented meter, count · size.
+    let label_w = 64;
+    let num_w = 150;
+    let meter = Rect { x: area.x + 22 + label_w, y: 0, w: area.w - 22 - label_w - num_w - 8, h: 10 };
+    let max_share = e.types.iter().map(|t| share(t)).fold(0.0f32, f32::max).max(1e-6);
+    for (i, t) in e.types.iter().enumerate() {
+        let row_mid = y + 7;
+        c.frame(Rect { x: area.x, y: row_mid - 7, w: 14, h: 14 }, 220);
+        c.pattern(Rect { x: area.x + 2, y: row_mid - 5, w: 10, h: 10 }, i, 235);
+        let label = fit(&fonts.mono, 14.0, &t.label, label_w as f32 - 4.0);
+        draw_text(c, &fonts.mono, 14.0, (area.x + 20) as f32, (row_mid + 5) as f32, &label, 240, full, false);
+
+        // Meter: dim slots for the full scale, lit segments for this type's share.
+        let seg = 5;
+        let slots = meter.w / seg;
+        let lit = ((share(t) / max_share) * slots as f32).ceil() as i32;
+        for k in 0..slots {
+            let r = Rect { x: meter.x + k * seg, y: row_mid - 4, w: seg - 2, h: 9 };
+            if k < lit {
+                c.fill(r, 235);
+            } else {
+                c.fill(Rect { y: row_mid, h: 1, ..r }, 90);
+            }
+        }
+
+        let pct = (share(t) * 100.0).round() as u32;
+        let nums = format!("{:>3}%  {:>4}  {}", pct, t.count, format_size(t.bytes));
+        let nums = fit(&fonts.mono, 13.0, &nums, num_w as f32);
+        let nw = text_width(&fonts.mono, 13.0, &nums);
+        draw_text(c, &fonts.mono, 13.0, (area.x + area.w) as f32 - nw, (row_mid + 5) as f32, &nums, 200, full, false);
+        y += 20;
+    }
+    y + 4
+}
+
+/// A continuation page: a slim header saying which part of the content this is,
+/// then a mosaic that mostly carries on through the real listing.
+fn next_page(c: &mut Canvas, e: &Entry, rng: &mut Rng, walk: &mut Walk, fonts: &Fonts) {
+    let full = Rect { x: 0, y: 0, w: TEX_W as i32, h: TEX_H as i32 };
+    let m = 14;
+    let (line0, hex0) = (walk.line, walk.hex);
+
+    let body = Rect { x: m, y: 70, w: TEX_W as i32 - 2 * m, h: TEX_H as i32 - 70 - m };
+    mosaic(c, body, e, rng, walk, fonts, 0.75);
+
+    // Header drawn after the body, so it can say what the page showed.
+    let name = fit(&fonts.wide, 22.0, &e.name.to_uppercase(), (TEX_W as i32 - 2 * m) as f32);
+    draw_text(c, &fonts.wide, 22.0, m as f32, 34.0, &name, 235, full, false);
+    let range = if !e.lines.is_empty() {
+        let what = if e.is_dir { "ITEMS" } else { "LINES" };
+        let total = if e.is_dir { e.child_count.max(e.lines.len()) } else { e.lines.len() };
+        format!("{what} {}-{} OF {total}", line0 + 1, walk.line.min(e.lines.len()))
+    } else {
+        format!("BYTES {hex0:06X}-{:06X} OF {:06X}", walk.hex.min(e.head.len()), e.head.len())
+    };
+    draw_text(c, &fonts.mono, 16.0, (m + 16) as f32, 56.0, &format!("CONT.  {range}"), 190, full, false);
+    c.marker(m, 51, 10, 220, full);
+    c.fill(Rect { x: m, y: 64, w: TEX_W as i32 - 2 * m, h: 2 }, 220);
+}
+
+fn mosaic(c: &mut Canvas, body: Rect, e: &Entry, rng: &mut Rng, walk: &mut Walk, fonts: &Fonts, list_bias: f32) {
+    let mut blocks = Vec::new();
+    split(body, rng, 0, &mut blocks);
+    for b in blocks {
+        mosaic_block(c, b, e, rng, walk, fonts, list_bias);
+    }
 }
 
 // Guillotine-split a rectangle into a mosaic of blocks.
@@ -204,7 +370,7 @@ fn split(r: Rect, rng: &mut Rng, depth: u32, out: &mut Vec<Rect>) {
     }
 }
 
-fn mosaic_block(c: &mut Canvas, b: Rect, e: &Entry, rng: &mut Rng, cursor: &mut usize, fonts: &Fonts) {
+fn mosaic_block(c: &mut Canvas, b: Rect, e: &Entry, rng: &mut Rng, walk: &mut Walk, fonts: &Fonts, list_bias: f32) {
     let framed = rng.f32() < 0.4;
     let invert = rng.f32() < 0.1;
     let level = 150 + (rng.f32() * 105.0) as u8;
@@ -217,12 +383,13 @@ fn mosaic_block(c: &mut Canvas, b: Rect, e: &Entry, rng: &mut Rng, cursor: &mut 
     let inner = Rect { x: b.x + 5, y: b.y + 4, w: b.w - 10, h: b.h - 8 };
 
     // Real data first: names / text lines, or the file's hex dump; then filler kinds.
-    let has_lines = !e.lines.is_empty();
-    let has_head = !e.head.is_empty();
+    // Once a multi-page tower has shown everything, the rest of the page is filler.
+    let has_lines = !e.lines.is_empty() && (walk.wrap || walk.lines_left(e));
+    let has_head = !e.head.is_empty() && (walk.wrap || !e.lines.is_empty() || walk.hex_left(e));
     let pick = rng.f32();
-    let kind = if has_lines && pick < 0.5 {
+    let kind = if has_lines && pick < list_bias {
         0
-    } else if has_head && pick < 0.8 {
+    } else if has_head && pick < list_bias + 0.3 {
         1
     } else {
         2 + (rng.f32() * 3.0) as u32
@@ -235,8 +402,11 @@ fn mosaic_block(c: &mut Canvas, b: Rect, e: &Entry, rng: &mut Rng, cursor: &mut 
     match kind {
         0 => {
             for _ in 0..rows {
-                let (t, is_dir) = &e.lines[*cursor % e.lines.len()];
-                *cursor += 1;
+                if walk.line >= e.lines.len() && !walk.wrap {
+                    break;
+                }
+                let (t, is_dir) = &e.lines[walk.line % e.lines.len()];
+                walk.line += 1;
                 let t = if *is_dir { t.to_uppercase() + " >" } else { t.clone() };
                 let v = if *is_dir { level } else { level.saturating_sub(40) };
                 draw_text(c, &fonts.mono, px, inner.x as f32, y, &t, v, inner, invert);
@@ -247,17 +417,22 @@ fn mosaic_block(c: &mut Canvas, b: Rect, e: &Entry, rng: &mut Rng, cursor: &mut 
             // Hex dump of the real bytes: offset, hex, ascii (as many columns as fit)
             let cw = fonts.mono.metrics('0', px).advance_width;
             let per = (((inner.w as f32 / cw) - 6.0) / 4.0).clamp(2.0, 16.0) as usize;
-            let mut off = (rng.next() as usize % e.head.len().max(1)) / per * per;
+            // Hex walks on through the file; it only loops when it's filler.
+            let loops = walk.wrap || !e.lines.is_empty();
             for _ in 0..rows {
-                if off >= e.head.len() {
-                    off = 0;
+                if walk.hex >= e.head.len() {
+                    if !loops {
+                        break;
+                    }
+                    walk.hex = 0;
                 }
+                let off = walk.hex;
                 let chunk = &e.head[off..(off + per).min(e.head.len())];
                 let hex: String = chunk.iter().map(|b| format!("{b:02X}")).collect::<Vec<_>>().join(" ");
                 let asc: String = chunk.iter().map(|&b| if (0x20..0x7f).contains(&b) { b as char } else { '.' }).collect();
                 let line = format!("{off:04X} {hex:<w$} {asc}", w = per * 3 - 1);
                 draw_text(c, &fonts.mono, px, inner.x as f32, y, &line, level, inner, invert);
-                off += per;
+                walk.hex += per;
                 y += line_h;
             }
         }

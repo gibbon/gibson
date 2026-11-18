@@ -24,10 +24,10 @@ use winit::window::{Window, WindowId};
 /// Work coming back from the loader threads.
 enum Msg {
     Scanned { generation: u64, entries: Vec<fs_scan::Entry> },
-    Baked { generation: u64, index: usize, mips: Vec<u8> },
+    Baked { generation: u64, index: usize, pages: Vec<Vec<u8>> }, // one mip chain per page
 }
 
-const UPLOADS_PER_FRAME: usize = 6;
+const PAGE_UPLOADS_PER_FRAME: usize = 12;
 
 struct Running {
     window: Arc<Window>,
@@ -39,7 +39,7 @@ struct Running {
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     fonts: Arc<textgen::Fonts>,
-    pending: Vec<(usize, Vec<u8>)>, // baked, waiting for upload
+    pending: Vec<(usize, Vec<Vec<u8>>)>, // baked pages, waiting for upload
     keys: HashSet<KeyCode>,
     dragging: bool,
     last_cursor: Option<(f64, f64)>,
@@ -77,35 +77,52 @@ impl Running {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 Msg::Scanned { generation, entries } if generation == self.generation => {
-                    let city = City::build(entries);
+                    let city = City::build(entries, self.renderer.max_face_layers);
+                    self.renderer.reserve_face_layers(city.layers());
                     // Start at the front edge of the city, low, looking down the main lane.
                     self.camera = Camera::new();
                     self.camera.pos = glam::Vec3::new(city.origin.x - city::CELL * 0.5, 9.0, city.half_extent.y + 45.0);
                     // Bake every face in parallel, off the UI thread.
-                    let jobs: Vec<(usize, fs_scan::Entry, f32)> =
-                        city.towers.iter().enumerate().map(|(i, t)| (i, t.entry.clone(), t.seed)).collect();
+                    let jobs: Vec<(usize, fs_scan::Entry, f32, u32)> = city
+                        .towers
+                        .iter()
+                        .enumerate()
+                        .map(|(i, t)| (i, t.entry.clone(), t.seed, t.max_pages))
+                        .collect();
                     let (tx, fonts) = (self.tx.clone(), self.fonts.clone());
                     std::thread::spawn(move || {
-                        jobs.into_par_iter().for_each(|(index, entry, seed)| {
-                            let mips = textgen::bake(&entry, seed, &fonts);
-                            let _ = tx.send(Msg::Baked { generation, index, mips });
+                        jobs.into_par_iter().for_each(|(index, entry, seed, max_pages)| {
+                            let pages = textgen::bake(&entry, seed, &fonts, max_pages);
+                            let _ = tx.send(Msg::Baked { generation, index, pages });
                         });
                     });
-                    log::info!("city: {} towers in {}x{}", city.towers.len(), city.cols, city.rows);
+                    log::info!(
+                        "city: {} towers in {}x{}, {} face pages reserved",
+                        city.towers.len(),
+                        city.cols,
+                        city.rows,
+                        city.layers()
+                    );
                     self.city = Some(city);
                 }
-                Msg::Baked { generation, index, mips } if generation == self.generation => {
-                    self.pending.push((index, mips));
+                Msg::Baked { generation, index, pages } if generation == self.generation => {
+                    self.pending.push((index, pages));
                 }
                 _ => {} // stale: from a folder we've already left
             }
         }
         // Upload a few per frame so loading never stutters.
         if let Some(city) = &mut self.city {
-            for _ in 0..UPLOADS_PER_FRAME {
-                let Some((index, mips)) = self.pending.pop() else { break };
-                self.renderer.upload_face(index as u32, &mips);
-                city.towers[index].layer = Some(index as u32);
+            let mut uploaded = 0;
+            while uploaded < PAGE_UPLOADS_PER_FRAME {
+                let Some((index, pages)) = self.pending.pop() else { break };
+                let t = &mut city.towers[index];
+                for (p, mips) in pages.iter().take(t.max_pages as usize).enumerate() {
+                    self.renderer.upload_face(t.first_layer + p as u32, mips);
+                }
+                t.pages = (pages.len() as u32).min(t.max_pages);
+                t.layer = Some(t.first_layer);
+                uploaded += pages.len();
             }
         }
     }
