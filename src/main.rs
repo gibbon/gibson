@@ -37,9 +37,9 @@ enum Msg {
         pages: Vec<textgen::Page>,
         cached: bool,
         preview: Option<Arc<preview::Preview>>,
-        seek: f32,
+        duration: f32,
     },
-    Clip { generation: u64, index: usize, frames: Option<Vec<preview::Preview>> },
+    Clip { generation: u64, index: usize, clip: Option<preview::Clip> },
     Drives(Vec<PathBuf>),
 }
 
@@ -68,7 +68,7 @@ struct Running {
     rx: Receiver<Msg>,
     fonts: Arc<textgen::Fonts>,
     pending: Vec<Baked>, // baked towers, waiting for upload
-    clips: HashMap<usize, (Vec<preview::Preview>, usize)>, // tower → video frames, frame shown
+    clips: HashMap<usize, (preview::Clip, usize)>, // tower → video montage, frame shown
     clip_loading: HashSet<usize>,
     clip_failed: HashSet<usize>,
     cache: cache::PageCache,
@@ -160,12 +160,12 @@ impl Running {
                         }
                     }
                 }
-                Msg::Baked { generation, index, pages, cached, preview, seek } if generation == self.generation => {
-                    self.pending.push(Baked { index, pages, cached, preview, seek });
+                Msg::Baked { generation, index, pages, cached, preview, duration } if generation == self.generation => {
+                    self.pending.push(Baked { index, pages, cached, preview, duration });
                 }
-                Msg::Clip { generation, index, frames } if generation == self.generation => {
+                Msg::Clip { generation, index, clip } if generation == self.generation => {
                     self.clip_loading.remove(&index);
-                    match frames {
+                    match clip {
                         Some(f) => {
                             self.clips.insert(index, (f, usize::MAX));
                         }
@@ -182,12 +182,12 @@ impl Running {
         if let Some(city) = &mut self.city {
             let mut uploaded = 0;
             while uploaded < PAGE_UPLOADS_PER_FRAME {
-                let Some(Baked { index, pages, cached, preview, seek }) = self.pending.pop() else { break };
+                let Some(Baked { index, pages, cached, preview, duration }) = self.pending.pop() else { break };
                 let t = &mut city.towers[index];
                 if let (Some(layer), Some(p)) = (t.pv_layer, preview) {
-                    self.renderer.upload_preview(layer, &p.mips);
+                    self.renderer.upload_preview(layer, &p);
                     t.pv_size = Some((p.w, p.h));
-                    t.pv_seek = seek;
+                    t.pv_duration = duration;
                     t.pv_still = Some(p);
                     uploaded += 1;
                 }
@@ -265,19 +265,19 @@ impl Running {
                     return;
                 }
                 let key = cache::key(&entry, seed, max_pages);
-                let (pages, cached, preview, seek) = match cache.get(key) {
+                let (pages, cached, preview, duration) = match cache.get(key) {
                     Some(c) => (
                         c.pages.iter().map(|p| p.unpack(textgen::mips_len())).collect(),
                         true,
                         c.preview.clone(),
-                        c.seek,
+                        c.duration,
                     ),
                     None => {
                         // The picture first: the front page leaves room for it.
-                        let (preview, seek) = match pv_kind {
+                        let (preview, duration) = match pv_kind {
                             Some(preview::PvKind::Image) => (preview::image(&entry.path).map(Arc::new), 0.0),
                             Some(preview::PvKind::Video) => match preview::video_still(&entry.path) {
-                                Some((p, s)) => (Some(Arc::new(p)), s),
+                                Some((p, d)) => (Some(Arc::new(p)), d),
                                 None => (None, 0.0),
                             },
                             None => (None, 0.0),
@@ -285,11 +285,11 @@ impl Running {
                         let picture = preview.as_ref().map(|p| (p.w, p.h));
                         let pages = textgen::bake(&entry, seed, &fonts, max_pages, picture);
                         let packed = pages.iter().map(cache::PackedPage::pack).collect();
-                        cache.put(key, cache::Cached { pages: packed, preview: preview.clone(), seek });
-                        (pages, false, preview, seek)
+                        cache.put(key, cache::Cached { pages: packed, preview: preview.clone(), duration });
+                        (pages, false, preview, duration)
                     }
                 };
-                let _ = tx.send(Msg::Baked { generation, index, pages, cached, preview, seek });
+                let _ = tx.send(Msg::Baked { generation, index, pages, cached, preview, duration });
             });
         });
         log::info!(
@@ -330,30 +330,42 @@ impl Running {
             self.clips.remove(&i);
             let t = &city.towers[i];
             if let (Some(layer), Some(still)) = (t.pv_layer, &t.pv_still) {
-                self.renderer.upload_preview(layer, &still.mips);
+                self.renderer.upload_preview(layer, still);
             }
         }
+        let mut cuts: Vec<(usize, f32)> = Vec::new();
         for &i in &wanted {
             let t = &city.towers[i];
             let Some(layer) = t.pv_layer else { continue };
             match self.clips.get_mut(&i) {
-                Some((frames, shown)) => {
-                    let f = ((time * preview::CLIP_FPS) as usize + i * 7) % frames.len();
+                Some((clip, shown)) => {
+                    let f = ((time * preview::CLIP_FPS) as usize + i * 7) % clip.frames.len();
                     if f != *shown {
-                        self.renderer.upload_preview(layer, &frames[f].mips);
+                        self.renderer.upload_preview(layer, &clip.frames[f]);
                         *shown = f;
                     }
+                    // The first two frames after a cut glitch hard.
+                    let near_cut = clip.cuts.len() > 1 && clip.cuts.iter().any(|&c| f >= c && f < c + 2);
+                    cuts.push((i, if near_cut { 1.0 } else { 0.0 }));
                 }
                 None if !self.clip_loading.contains(&i) => {
                     self.clip_loading.insert(i);
-                    let (path, seek, h) = (t.entry.path.clone(), t.pv_seek, t.pv_size.map_or(0, |s| s.1));
+                    let (path, dur, h) = (t.entry.path.clone(), t.pv_duration, t.pv_size.map_or(0, |s| s.1));
                     let (tx, generation) = (self.tx.clone(), self.generation);
                     std::thread::spawn(move || {
-                        let frames = preview::video_clip(&path, seek, h);
-                        let _ = tx.send(Msg::Clip { generation, index: i, frames });
+                        let clip = preview::video_clip(&path, dur, h);
+                        let _ = tx.send(Msg::Clip { generation, index: i, clip });
                     });
                 }
                 None => {}
+            }
+        }
+        if let Some(city) = &mut self.city {
+            for t in &mut city.towers {
+                t.pv_cut = 0.0;
+            }
+            for (i, c) in cuts {
+                city.towers[i].pv_cut = c;
             }
         }
     }
@@ -728,7 +740,7 @@ struct Baked {
     pages: Vec<textgen::Page>,
     cached: bool,
     preview: Option<Arc<preview::Preview>>,
-    seek: f32,
+    duration: f32,
 }
 
 impl ApplicationHandler for App {

@@ -38,7 +38,8 @@ pub struct Tower {
     pub pv_layer: Option<u32>,          // reserved preview layer
     pub pv_size: Option<(u32, u32)>,    // preview picture size, once uploaded
     pub pv_video: bool,
-    pub pv_seek: f32,                   // video: where the still / clip comes from
+    pub pv_duration: f32,               // video length in seconds (0 if unknown)
+    pub pv_cut: f32,                    // video: 1 for a moment at each montage cut
     pub pv_still: Option<std::sync::Arc<crate::preview::Preview>>, // shown when not playing
 }
 
@@ -123,7 +124,8 @@ impl City {
                     pv_layer: None,
                     pv_size: None,
                     pv_video: false,
-                    pv_seek: 0.0,
+                    pv_duration: 0.0,
+                    pv_cut: 0.0,
                     pv_still: None,
                 }
             })

@@ -566,23 +566,20 @@ impl Renderer {
 
     /// Uploads a baked face texture (full mip chain) into an array layer.
     /// Uploads a preview picture (RGBA, full mip chain) into its layer.
-    pub fn upload_preview(&self, layer: u32, mips: &[u8]) {
-        let mut off = 0usize;
-        for level in 0..PV_MIPS {
-            let s = (PV >> level).max(1);
-            let len = (s * s * 4) as usize;
+    pub fn upload_preview(&self, layer: u32, pv: &crate::preview::Preview) {
+        for (level, (off, w, rows)) in pv.levels().enumerate() {
+            let len = (w * rows * 4) as usize;
             self.queue.write_texture(
                 wgpu::TexelCopyTextureInfo {
                     texture: &self.preview_tex,
-                    mip_level: level,
+                    mip_level: level as u32,
                     origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
                     aspect: wgpu::TextureAspect::All,
                 },
-                &mips[off..off + len],
-                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(s * 4), rows_per_image: Some(s) },
-                wgpu::Extent3d { width: s, height: s, depth_or_array_layers: 1 },
+                &pv.mips[off..off + len],
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(rows) },
+                wgpu::Extent3d { width: w, height: rows, depth_or_array_layers: 1 },
             );
-            off += len;
         }
     }
 
@@ -787,7 +784,7 @@ fn instance_of(t: &crate::city::Tower) -> Instance {
         body_col: [body[0], body[1], body[2], t.hover],
         misc: [t.layer.unwrap_or(0) as f32, t.seed, 1.0, t.pages.max(1) as f32],
         pv: match (t.pv_layer, t.pv_size) {
-            (Some(l), Some((w, h))) => [l as f32, w as f32 / PV as f32, h as f32 / PV as f32, t.pv_video as u8 as f32],
+            (Some(l), Some((w, h))) => [l as f32, w as f32 / PV as f32, h as f32 / PV as f32, t.pv_video as u8 as f32 + t.pv_cut],
             _ => [-1.0, 0.0, 0.0, 0.0],
         },
         pv_rect: match t.pv_size {

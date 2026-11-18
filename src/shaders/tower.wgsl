@@ -110,7 +110,8 @@ fn fs(i: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
             let box = pr.zw - pr.xy;
             var q = (puv - pr.xy) / box; // 0..1 across the picture
             let tick = floor(t * 14.0);
-            let burst = step(0.84, hash(vec2<f32>(floor(t * 2.5), seed))); // now and then, a fit
+            // Now and then a fit; and always on a video's montage cuts (pv.w > 1).
+            let burst = max(step(0.84, hash(vec2<f32>(floor(t * 2.5), seed))), step(1.5, pv.w));
             let band = floor(q.y * 36.0);
             let jag = hash(vec2<f32>(band, tick + seed));
             q.x += (jag - 0.5) * 0.12 * burst * step(0.55, jag) + (jag - 0.5) * 0.004;
@@ -120,7 +121,7 @@ fn fs(i: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
             let uvq = clamp(q, vec2<f32>(0.0), vec2<f32>(1.0)) * scale;
             let ggx = gx / box * scale;
             let ggy = gy / box * scale;
-            let split = vec2<f32>((0.002 + 0.012 * burst) * (1.0 + pv.w) * scale.x, 0.0);
+            let split = vec2<f32>((0.002 + 0.012 * burst) * (1.0 + min(pv.w, 1.0)) * scale.x, 0.0);
             let lay = i32(pv.x);
             pic = vec3<f32>(
                 textureSampleGrad(previews, samp, uvq + split, lay, ggx, ggy).r,

@@ -11,11 +11,11 @@ use std::sync::{Arc, Mutex};
 const CACHE_BYTES: usize = 384 * 1024 * 1024;
 
 /// What's kept per tower: its packed pages, and its preview picture (plus, for
-/// videos, where in the video the picture came from).
+/// videos, how long the video is).
 pub struct Cached {
     pub pages: Vec<PackedPage>,
     pub preview: Option<Arc<Preview>>,
-    pub seek: f32,
+    pub duration: f32, // videos: length in seconds
 }
 
 impl Cached {
