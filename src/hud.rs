@@ -33,6 +33,7 @@ pub enum HudAction {
     Go(PathBuf), // open this folder
     Back,        // the folder before this one
     Up,          // the parent folder
+    Help,        // show / hide the hotkeys
 }
 
 /// What's under the cursor, already worded for the panel.
@@ -51,6 +52,7 @@ pub struct HudState {
     pub can_up: bool,
     pub fps: u32,
     pub search: Option<(String, usize)>, // open search box: text, matches
+    pub help: bool,                      // hotkey panel open
     pub hover: Option<HoverInfo>,
     pub selected: Option<(String, PathBuf, bool)>, // clicked tower: name, path, is folder
     pub status: String,
@@ -65,18 +67,19 @@ pub struct Hud {
     /// Clickable places, and what clicking them does.
     pub hits: Vec<(Rect, HudAction)>,
     pub bar_h: i32,
+    help_open: bool,
     last: Option<HudState>,
     scale: f32,
 }
 
 impl Hud {
     pub fn new() -> Hud {
-        Hud { w: 0, h: 0, px: Vec::new(), hits: Vec::new(), bar_h: 0, last: None, scale: 1.0 }
+        Hud { w: 0, h: 0, px: Vec::new(), hits: Vec::new(), bar_h: 0, help_open: false, last: None, scale: 1.0 }
     }
 
     /// True if the cursor is over the HUD (so it shouldn't pick towers behind it).
     pub fn covers(&self, _x: f64, y: f64) -> bool {
-        y < self.bar_h as f64
+        self.help_open || y < self.bar_h as f64
     }
 
     /// Redraws if anything changed; returns true when `px` is new.
@@ -163,7 +166,8 @@ impl Hud {
         };
         let fps_label = format!("{:>3} FPS", st.fps);
         let fps_w = text_width(&fonts.mono, mono, &fps_label) as i32 + u(28.0);
-        let status_w = fps_w + if st.status.is_empty() { 0 } else { text_width(&fonts.mono, mono, &st.status) as i32 + u(30.0) };
+        let help_w = u(40.0);
+        let status_w = fps_w + help_w + if st.status.is_empty() { 0 } else { text_width(&fonts.mono, mono, &st.status) as i32 + u(30.0) };
         let sel_label = st.selected.as_ref().map(|(n, _, _)| n.to_uppercase());
         let sel_w = sel_label.as_ref().map_or(0.0, |l| text_width(&fonts.mono, mono, l) + 40.0 * s);
         let room = ((w - x - status_w - u(12.0)) as f32 - sel_w).max(0.0);
@@ -218,10 +222,26 @@ impl Hud {
         let fps_col = if st.fps >= 55 { DIM } else if st.fps >= 30 { AMBER } else { WARN };
         self.text(&fonts.mono, mono, fps_x, base, &fps_label, fps_col, 1.0);
         self.fill(Rect { x: fps_x as i32 - u(12.0), y: u(10.0), w: 1, h: bar_h - u(20.0) }, DIM, 0.8);
+
+        // The ? button: opens the hotkey panel.
+        let side = bar_h - u(16.0);
+        let hb = Rect { x: fps_x as i32 - u(24.0) - side, y: u(8.0), w: side, h: side };
+        let hot = st.hot == Some(self.hits.len());
+        if st.help {
+            self.fill(hb, CYAN, 0.85);
+        } else if hot {
+            self.fill(hb, CYAN, 0.22);
+        }
+        self.frame(hb, CYAN, if st.help || hot { 1.0 } else { 0.6 });
+        let qw = text_width(&fonts.mono, mono, "?");
+        let qcol = if st.help { INK } else { CYAN };
+        self.text(&fonts.mono, mono, hb.x as f32 + (hb.w as f32 - qw) / 2.0, base, "?", qcol, 1.0);
+        self.hits.push((hb, HudAction::Help));
+
         if !st.status.is_empty() {
             let tw = text_width(&fonts.mono, mono, &st.status);
             let col = if st.warn { WARN } else { CYAN };
-            self.text(&fonts.mono, mono, fps_x - u(26.0) as f32 - tw, base, &st.status, col, 1.0);
+            self.text(&fonts.mono, mono, hb.x as f32 - u(14.0) as f32 - tw, base, &st.status, col, 1.0);
         }
 
         // ── Search box, centred under the bar ──────────────────────────────
@@ -245,7 +265,7 @@ impl Hud {
         }
 
         // ── Bottom left: what's under the cursor, or how to drive ───────────
-        let hint = "DRAG look   WASD/QE fly   CLICK fly to   DOUBLE-CLICK open   / search   R show in Explorer   BACKSPACE up   ALT+← back";
+        let hint = "? HELP   DRAG look   WASD fly   CLICK fly to   DOUBLE-CLICK open   / search   BACKSPACE up";
         let small = 13.0 * s;
         match &st.hover {
             Some(hv) => {
@@ -266,6 +286,63 @@ impl Hud {
                 self.text(&fonts.mono, small, u(14.0) as f32, (h - u(10.0)) as f32, hint, DIM, 0.9);
             }
         }
+
+        self.help_open = st.help;
+        if st.help {
+            self.help_panel(fonts);
+        }
+    }
+
+    /// The hotkey panel, centred, in two columns of sections.
+    fn help_panel(&mut self, fonts: &Fonts) {
+        let s = self.scale;
+        let u = |v: f32| (v * s).round() as i32;
+        let (w, h) = (self.w as i32, self.h as i32);
+        let (key_px, txt_px, head_px) = (14.0 * s, 14.0 * s, 13.0 * s);
+        let row = u(22.0);
+        let key_col = u(230.0);
+        let col_w = u(560.0);
+        // Sections fill the left column, then the right.
+        let rows_of = |sec: &(&str, &[(&str, &str)])| sec.1.len() as i32 + 2;
+        let total: i32 = HELP.iter().map(rows_of).sum();
+        let mut split = 0;
+        let mut acc = 0;
+        for (k, sec) in HELP.iter().enumerate() {
+            if acc >= total / 2 {
+                break;
+            }
+            acc += rows_of(sec);
+            split = k + 1;
+        }
+        let left_rows = acc;
+        let right_rows = total - acc;
+        let pw = (col_w * 2 + u(60.0)).min(w - u(24.0));
+        let ph = (left_rows.max(right_rows) * row + u(80.0)).min(h - self.bar_h - u(20.0));
+        let r = Rect { x: (w - pw) / 2, y: self.bar_h + (h - self.bar_h - ph) / 2, w: pw, h: ph };
+        self.fill(r, [0.0, 0.012, 0.035], 0.93);
+        self.frame(r, CYAN, 0.9);
+        self.fill(Rect { x: r.x, y: r.y, w: r.w, h: u(3.0) }, CYAN, 0.9);
+        self.text(&fonts.wide, 20.0 * s, (r.x + u(22.0)) as f32, (r.y + u(38.0)) as f32, "HOTKEYS", CYAN, 1.0);
+        let close = "?  F1  ESC  CLOSE";
+        let cw = text_width(&fonts.mono, head_px, close);
+        self.text(&fonts.mono, head_px, (r.x + r.w) as f32 - cw - 22.0 * s, (r.y + u(36.0)) as f32, close, DIM, 1.0);
+
+        let draw_col = |hud: &mut Hud, secs: &[(&str, &[(&str, &str)])], x: i32| {
+            let mut y = r.y + u(74.0);
+            for (title, items) in secs {
+                hud.text(&fonts.mono, head_px, x as f32, y as f32, title, DIM, 1.0);
+                hud.fill(Rect { x, y: y + u(5.0), w: col_w - u(20.0), h: 1 }, DIM, 0.6);
+                y += row;
+                for (keys, what) in items.iter() {
+                    hud.text(&fonts.mono, key_px, x as f32, y as f32, keys, AMBER, 1.0);
+                    hud.text(&fonts.mono, txt_px, (x + key_col) as f32, y as f32, &what.to_uppercase(), CYAN, 0.9);
+                    y += row;
+                }
+                y += row;
+            }
+        };
+        draw_col(self, &HELP[..split], r.x + u(24.0));
+        draw_col(self, &HELP[split..], r.x + u(24.0) + col_w + u(20.0));
     }
 
     // ── Drawing (premultiplied RGBA, "over" blending) ──────────────────────
@@ -342,6 +419,37 @@ impl Hud {
         pen
     }
 }
+
+/// The help panel: (section, [(keys, what they do)]).
+const HELP: &[(&str, &[(&str, &str)])] = &[
+    ("FLYING", &[
+        ("W A S D  /  ARROWS", "fly forward, back, left, right"),
+        ("E  /  SPACE", "up"),
+        ("Q  /  CTRL", "down"),
+        ("SHIFT", "fly 4x faster"),
+        ("DRAG (EITHER BUTTON)", "look around"),
+        ("MOUSE WHEEL", "flying speed"),
+    ]),
+    ("TOWERS", &[
+        ("CLICK", "fly to a tower (selects it, amber)"),
+        ("DOUBLE-CLICK", "open a folder, file or listed name"),
+        ("ENTER", "go into the hovered tower"),
+        ("R", "show it in Explorer"),
+        ("ESC", "clear the selection"),
+    ]),
+    ("FOLDERS", &[
+        ("BACKSPACE", "up to the parent folder"),
+        ("ALT + LEFT  /  MOUSE BACK", "back to the previous folder"),
+        ("TOP BAR", "click a drive or part of the path"),
+        ("FLY INTO A FOLDER", "opens it"),
+    ]),
+    ("SEARCH", &[
+        ("/  OR  CTRL + F", "search this folder by name"),
+        ("ENTER", "fly to the next match"),
+        ("ESC", "close the search"),
+    ]),
+    ("HELP", &[("?  /  F1", "show or hide this")]),
+];
 
 fn small_px(scale: f32) -> f32 {
     13.0 * scale

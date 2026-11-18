@@ -87,6 +87,7 @@ struct Running {
     hot: Option<usize>,          // HUD button under the cursor
     last_click: Option<(Instant, usize, Option<usize>)>, // when, tower, name
     entering: Option<usize>, // tower we're flying into
+    help: bool,              // hotkey panel open
     search: Option<String>,  // search box open, with its text
     matches: Vec<f32>,       // per tower: 1 name matches, 0.5 something inside it does
     match_order: Vec<usize>, // matching towers, best and nearest first (Enter walks it)
@@ -379,7 +380,12 @@ impl Running {
                 hud::HudAction::Go(path) => self.load(path, false),
                 hud::HudAction::Back => self.go_back(),
                 hud::HudAction::Up => self.go_up(),
+                hud::HudAction::Help => self.help = !self.help,
             }
+            return;
+        }
+        if self.help {
+            self.help = false; // a click outside the panel closes it
             return;
         }
         let Some(i) = self.hovered else { return };
@@ -704,6 +710,7 @@ impl Running {
             can_up: self.path.parent().is_some(),
             fps: self.fps,
             search: self.search.clone().map(|q| (q, self.match_order.len())),
+            help: self.help,
             hover,
             selected,
             status,
@@ -803,6 +810,7 @@ impl ApplicationHandler for App {
             hot: None,
             last_click: None,
             entering: None,
+            help: false,
             search: None,
             matches: Vec::new(),
             match_order: Vec::new(),
@@ -833,7 +841,15 @@ impl ApplicationHandler for App {
                     match event.state {
                         ElementState::Pressed => {
                             match code {
+                                KeyCode::Escape if s.help => s.help = false,
                                 KeyCode::Escape => s.selected = None,
+                                KeyCode::F1 if !event.repeat => s.help = !s.help,
+                                KeyCode::Slash
+                                    if !event.repeat
+                                        && (s.keys.contains(&KeyCode::ShiftLeft) || s.keys.contains(&KeyCode::ShiftRight)) =>
+                                {
+                                    s.help = !s.help
+                                }
                                 KeyCode::Slash if !event.repeat => s.open_search(),
                                 KeyCode::KeyF
                                     if !event.repeat
