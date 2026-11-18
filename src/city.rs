@@ -1,0 +1,159 @@
+// Lays a folder's entries out as a grid of glass towers with streets between them.
+
+use crate::fs_scan::Entry;
+use glam::{Vec2, Vec3};
+
+pub const CELL: f32 = 26.0; // tower spacing; streets run along the cell boundaries
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Kind {
+    Folder,
+    Text,
+    Media,
+    Binary,
+    Other,
+}
+
+pub struct Tower {
+    pub entry: Entry,
+    pub base: Vec3, // centre of the footprint at ground level
+    pub size: Vec3, // width, height, depth
+    pub kind: Kind,
+    pub seed: f32,
+    pub layer: Option<u32>, // texture-array layer once baked + uploaded
+    pub appear: f32,        // 0 → 1 fade-in after the texture arrives
+    pub hover: f32,         // eased highlight
+}
+
+impl Tower {
+    pub fn min(&self) -> Vec3 {
+        Vec3::new(self.base.x - self.size.x / 2.0, 0.0, self.base.z - self.size.z / 2.0)
+    }
+    pub fn max(&self) -> Vec3 {
+        Vec3::new(self.base.x + self.size.x / 2.0, self.size.y, self.base.z + self.size.z / 2.0)
+    }
+}
+
+pub struct City {
+    pub towers: Vec<Tower>,
+    pub cols: usize,
+    pub rows: usize,
+    pub origin: Vec2, // world x,z of cell (0,0) centre
+    pub half_extent: Vec2,
+}
+
+impl City {
+    pub fn build(entries: Vec<Entry>) -> City {
+        let n = entries.len().max(1);
+        let cols = ((n as f32 * 0.8).sqrt().ceil() as usize).max(1);
+        let rows = n.div_ceil(cols);
+        let origin = Vec2::new(-((cols - 1) as f32) * CELL / 2.0, -((rows - 1) as f32) * CELL / 2.0);
+        let mut rng = Rng(0x9E37_79B9_7F4A_7C15 ^ n as u64);
+
+        let towers = entries
+            .into_iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let (col, row) = (i % cols, i / cols);
+                let (w, h) = if e.is_dir {
+                    // Tall square prisms, ~3–5:1; height grows with how much is inside.
+                    let items = e.child_count as f32 + if e.capped { 2000.0 } else { 0.0 };
+                    let l = (1.0 + items).log2();
+                    let w = 8.0 + (l * 0.45).min(4.0);
+                    (w, w * (2.4 + (l * 0.32).min(3.2)))
+                } else {
+                    let kb = e.size as f32 / 1024.0;
+                    let w = 5.0 + ((1.0 + kb).log10() * 0.8).min(3.0);
+                    (w, w * (1.1 + ((1.0 + kb / 10.0).log10() * 0.8).min(3.0)))
+                };
+                let jitter = Vec3::new(rng.f32() - 0.5, 0.0, rng.f32() - 0.5) * 2.0;
+                Tower {
+                    kind: if e.is_dir { Kind::Folder } else { kind_of(&e.name) },
+                    entry: e,
+                    base: Vec3::new(origin.x + col as f32 * CELL, 0.0, origin.y + row as f32 * CELL) + jitter,
+                    size: Vec3::new(w, h, w),
+                    seed: rng.f32() * 100.0,
+                    layer: None,
+                    appear: 0.0,
+                    hover: 0.0,
+                }
+            })
+            .collect();
+
+        City {
+            towers,
+            cols,
+            rows,
+            origin,
+            half_extent: Vec2::new(cols as f32 * CELL / 2.0, rows as f32 * CELL / 2.0),
+        }
+    }
+
+    /// Closest tower hit by a ray.
+    pub fn pick(&self, o: Vec3, d: Vec3) -> Option<usize> {
+        let mut best = None;
+        let mut best_t = f32::MAX;
+        for (i, t) in self.towers.iter().enumerate() {
+            if let Some(hit) = ray_box(o, d, t.min(), t.max()) {
+                if hit < best_t {
+                    best_t = hit;
+                    best = Some(i);
+                }
+            }
+        }
+        best
+    }
+}
+
+fn kind_of(name: &str) -> Kind {
+    let ext = name.rsplit('.').next().unwrap_or("").to_lowercase();
+    match ext.as_str() {
+        "rs" | "cs" | "cpp" | "c" | "h" | "js" | "ts" | "py" | "go" | "java" | "json" | "xml" | "md" | "txt"
+        | "html" | "css" | "hlsl" | "wgsl" | "yml" | "yaml" | "toml" | "log" | "sh" | "ps1" => Kind::Text,
+        "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp" | "mp4" | "mkv" | "mov" | "mp3" | "wav" | "flac" => {
+            Kind::Media
+        }
+        "exe" | "dll" | "zip" | "7z" | "rar" | "iso" | "msi" | "bin" | "pak" | "so" | "dylib" => Kind::Binary,
+        _ => Kind::Other,
+    }
+}
+
+fn ray_box(o: Vec3, d: Vec3, mn: Vec3, mx: Vec3) -> Option<f32> {
+    let (mut t0, mut t1) = (0.0f32, f32::MAX);
+    for a in 0..3 {
+        if d[a].abs() < 1e-8 {
+            if o[a] < mn[a] || o[a] > mx[a] {
+                return None;
+            }
+            continue;
+        }
+        let (mut ta, mut tb) = ((mn[a] - o[a]) / d[a], (mx[a] - o[a]) / d[a]);
+        if ta > tb {
+            std::mem::swap(&mut ta, &mut tb);
+        }
+        t0 = t0.max(ta);
+        t1 = t1.min(tb);
+        if t0 > t1 {
+            return None;
+        }
+    }
+    Some(t0)
+}
+
+/// Tiny deterministic RNG (splitmix64) so a folder always builds the same city.
+pub struct Rng(pub u64);
+impl Rng {
+    pub fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    pub fn f32(&mut self) -> f32 {
+        (self.next() >> 40) as f32 / (1u64 << 24) as f32
+    }
+    pub fn range(&mut self, lo: i32, hi: i32) -> i32 {
+        lo + (self.next() % (hi - lo).max(1) as u64) as i32
+    }
+}

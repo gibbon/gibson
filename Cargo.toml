@@ -1,0 +1,15 @@
+[package]
+name = "gibson"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+bytemuck = { version = "1.25.2", features = ["derive"] }
+env_logger = "0.11.11"
+fontdue = "0.9.5"
+glam = "0.34.3"
+log = "0.4.35"
+pollster = "1.0.2"
+rayon = "1.12.0"
+wgpu = "30.0.2"
+winit = "0.30.13"
