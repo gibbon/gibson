@@ -1,0 +1,93 @@
+// Autofly: the camera flies itself down the streets between the towers, like the
+// film's flights. Waypoints are street crossings (cell corners); at each one it
+// mostly carries straight on, sometimes turns; heights vary between skimming the
+// floor and rising over the roofs. A Catmull-Rom curve through the waypoints keeps
+// it smooth, and the camera looks a little way ahead along it.
+
+use crate::city::{City, Rng, CELL};
+use glam::Vec3;
+use std::collections::VecDeque;
+
+pub struct AutoFly {
+    pts: VecDeque<Vec3>, // p0, p1, p2, p3, p4: flying p1 → p2
+    s: f32,              // 0..1 along p1 → p2
+    at: (i32, i32),      // crossing of the last waypoint
+    dir: (i32, i32),     // street direction
+    rng: Rng,
+}
+
+/// A street crossing's position (cell corners: between the towers).
+fn crossing(city: &City, i: i32, j: i32, height: f32) -> Vec3 {
+    Vec3::new(city.origin.x + (i as f32 - 0.5) * CELL, height, city.origin.y + (j as f32 - 0.5) * CELL)
+}
+
+fn catmull(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
+    let (t2, t3) = (t * t, t * t * t);
+    0.5 * ((2.0 * p1) + (p2 - p0) * t + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2 + (3.0 * p1 - p0 - 3.0 * p2 + p3) * t3)
+}
+
+impl AutoFly {
+    /// Starts from the camera: the nearest crossing, heading the way it faces.
+    pub fn new(city: &City, from: Vec3, facing: Vec3, seed: u64) -> AutoFly {
+        let i = (((from.x - city.origin.x) / CELL) + 0.5).round().clamp(0.0, city.cols as f32) as i32;
+        let j = (((from.z - city.origin.y) / CELL) + 0.5).round().clamp(0.0, city.rows as f32) as i32;
+        let dir = if facing.x.abs() > facing.z.abs() {
+            (facing.x.signum() as i32, 0)
+        } else {
+            (0, if facing.z < 0.0 { -1 } else { 1 })
+        };
+        let mut a = AutoFly { pts: VecDeque::new(), s: 0.0, at: (i, j), dir, rng: Rng(seed) };
+        let first = crossing(city, i, j, from.y.clamp(6.0, 60.0));
+        let back = from - (first - from).normalize_or(Vec3::Z) * 10.0;
+        a.pts.extend([back, from, first]);
+        while a.pts.len() < 5 {
+            let p = a.next_waypoint(city);
+            a.pts.push_back(p);
+        }
+        a
+    }
+
+    fn next_waypoint(&mut self, city: &City) -> Vec3 {
+        let (cols, rows) = (city.cols as i32, city.rows as i32);
+        let inside = |(i, j): (i32, i32)| i >= 0 && j >= 0 && i <= cols && j <= rows;
+        let (dx, dz) = self.dir;
+        let straight = (dx, dz);
+        let left = (dz, -dx);
+        let right = (-dz, dx);
+        let step = |d: (i32, i32), at: (i32, i32)| (at.0 + d.0, at.1 + d.1);
+        let r = self.rng.f32();
+        let mut order = if r < 0.62 { [straight, left, right] } else if r < 0.81 { [left, straight, right] } else { [right, straight, left] };
+        if self.rng.f32() < 0.5 {
+            order.swap(1, 2);
+        }
+        let d = order
+            .into_iter()
+            .find(|&d| inside(step(d, self.at)))
+            .unwrap_or((-dx, -dz)); // a dead end (tiny city): turn back
+        self.dir = d;
+        self.at = step(d, self.at);
+        // Mostly low between the towers; now and then up over the roofs.
+        let tallest = city.towers.iter().map(|t| t.size.y).fold(10.0f32, f32::max);
+        let h = if self.rng.f32() < 0.18 { tallest * (0.9 + self.rng.f32() * 0.5) } else { 5.0 + self.rng.f32() * 16.0 };
+        crossing(city, self.at.0, self.at.1, h)
+    }
+
+    /// Advances `speed` units along the route; returns where to be and where to look.
+    pub fn step(&mut self, city: &City, dt: f32, speed: f32) -> (Vec3, Vec3) {
+        let len = self.pts[1].distance(self.pts[2]).max(1.0);
+        self.s += speed * dt / len;
+        while self.s >= 1.0 {
+            self.s -= 1.0;
+            self.pts.pop_front();
+            let p = self.next_waypoint(city);
+            self.pts.push_back(p);
+        }
+        let p = |k: usize| self.pts[k];
+        let pos = catmull(p(0), p(1), p(2), p(3), self.s);
+        // Look ahead along the curve (into the next stretch if need be).
+        let ahead = self.s + 0.45;
+        let look = if ahead < 1.0 { catmull(p(0), p(1), p(2), p(3), ahead) } else { catmull(p(1), p(2), p(3), p(4), ahead - 1.0) };
+        let look = look - Vec3::Y * 1.5; // a touch downwards, at the street
+        (pos.max(Vec3::new(f32::MIN, 1.5, f32::MIN)), look)
+    }
+}

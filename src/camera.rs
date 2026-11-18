@@ -135,6 +135,26 @@ impl Camera {
         self.roll += (want - self.roll) * ease(BANK_EASE, dt);
     }
 
+    /// Autofly: the flight path puts the camera at `pos` looking at `look`; the view
+    /// eases round and banks into the turns as in manual flight.
+    pub fn steer(&mut self, pos: Vec3, look: Vec3, dt: f32) {
+        let dt = dt.clamp(1e-4, 0.1);
+        self.autopilot = None;
+        self.vel = (pos - self.pos) / dt; // so taking over by hand glides on
+        self.pos = pos;
+        let (yaw, pitch) = yaw_pitch(look - pos);
+        let tau = std::f32::consts::TAU;
+        self.target_yaw = yaw + ((self.target_yaw - yaw) / tau).round() * tau;
+        self.target_pitch = pitch;
+        let prev_yaw = self.yaw;
+        let k = ease(LOOK_EASE * 0.6, dt);
+        self.yaw += (self.target_yaw - self.yaw) * k;
+        self.pitch += (self.target_pitch - self.pitch) * k;
+        let yaw_rate = (self.yaw - prev_yaw) / dt;
+        let want = (yaw_rate * BANK_PER_TURN * 1.6).clamp(-BANK_MAX, BANK_MAX);
+        self.roll += (want - self.roll) * ease(BANK_EASE, dt);
+    }
+
     pub fn view(&self) -> Mat4 {
         let fwd = self.forward().normalize();
         // Positive roll about the view axis tips "up" towards the right.

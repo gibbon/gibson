@@ -41,6 +41,7 @@ pub enum HudAction {
     PlayPause,           // viewer: pause / play the video
     CloseViewer,
     TowerFx,             // next effect on the tower previews
+    AutoFly,             // fly itself / stop
 }
 
 /// The media viewer's overlay.
@@ -77,6 +78,7 @@ pub struct HudState {
     pub cats: Vec<(Cat, usize)>,         // file types in this folder, with counts
     pub filter: Vec<Cat>,                // shown types (empty = all)
     pub tower_fx: usize,                 // effect on tower previews
+    pub autofly: bool,                   // flying itself
     pub viewer: Option<ViewerHud>,
     pub hover: Option<HoverInfo>,
     pub selected: Option<(String, PathBuf, bool)>, // clicked tower: name, path, is folder
@@ -325,6 +327,21 @@ impl Hud {
                 self.frame(r, AMBER, if hot { 1.0 } else { 0.7 });
                 self.text(&fonts.mono, small, (r.x + u(7.0)) as f32, by, &fx, AMBER, 1.0);
                 self.hits.push((r, HudAction::TowerFx));
+            }
+            // AUTOFLY switch, left of it.
+            let af = if st.autofly { "AUTOFLY ON  P" } else { "AUTOFLY  P" };
+            let aw = text_width(&fonts.mono, small, af).ceil() as i32;
+            let ar = Rect { x: r.x - aw - u(24.0), y: r.y, w: aw + u(14.0), h: r.h };
+            if ar.x > x + u(10.0) {
+                let hot = st.hot == Some(self.hits.len());
+                if st.autofly {
+                    self.fill(ar, CYAN, 0.85);
+                } else if hot {
+                    self.fill(ar, CYAN, 0.2);
+                }
+                self.frame(ar, CYAN, if st.autofly || hot { 1.0 } else { 0.6 });
+                self.text(&fonts.mono, small, (ar.x + u(7.0)) as f32, by, af, if st.autofly { INK } else { CYAN }, 1.0);
+                self.hits.push((ar, HudAction::AutoFly));
             }
             below = bar_h + strip_h;
         }
@@ -667,6 +684,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("SHIFT", "fly 4x faster"),
         ("DRAG (EITHER BUTTON)", "look around"),
         ("MOUSE WHEEL", "flying speed"),
+        ("P", "fly itself (any key stops)"),
     ]),
     ("TOWERS", &[
         ("CLICK", "fly to a tower (selects it, amber)"),

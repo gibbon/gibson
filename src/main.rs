@@ -5,6 +5,7 @@
 
 mod cache;
 mod audio;
+mod autofly;
 mod camera;
 mod city;
 mod files;
@@ -102,6 +103,7 @@ struct Running {
     settings: settings::Settings,
     scrub_drag: Option<f32>, // dragging the viewer's timeline: where (0..1)
     view_on_load: Option<PathBuf>, // started with a file: view it once its folder is up
+    autofly: Option<autofly::AutoFly>, // flying itself down the streets (P)
     search: Option<String>,  // search box open, with its text
     matches: Vec<f32>,       // per tower: 1 name matches, 0.5 something inside it does
     match_order: Vec<usize>, // matching towers, best and nearest first (Enter walks it)
@@ -272,9 +274,17 @@ impl Running {
                 self.camera.place(eye + back + Vec3::Y * 2.0, look);
             }
             None => {
-                let eye = Vec3::new(city.origin.x - city::CELL * 0.5, 9.0, city.half_extent.y + 45.0);
-                self.camera.place(eye, eye + Vec3::new(0.0, -0.1, -1.0));
+                // Raised, just in front of the city, looking down over the towers.
+                let tallest = city.towers.iter().map(|t| t.size.y).fold(10.0f32, f32::max);
+                let h = (tallest * 0.75).clamp(22.0, 70.0);
+                let eye = Vec3::new(0.0, h, city.half_extent.y + 10.0 + h * 0.45);
+                let look = Vec3::new(0.0, tallest * 0.2, -city.half_extent.y * 0.25);
+                self.camera.place(eye, look);
             }
+        }
+        if self.autofly.is_some() {
+            // Keep flying, through the new city.
+            self.autofly = Some(autofly::AutoFly::new(&city, self.camera.pos, self.camera.forward(), self.generation));
         }
 
         // Bake every face in parallel, off the UI thread.
@@ -438,6 +448,7 @@ impl Running {
                 }
                 hud::HudAction::CloseViewer => self.viewer = None,
                 hud::HudAction::TowerFx => self.step_tower_fx(1),
+                hud::HudAction::AutoFly => self.toggle_autofly(),
             }
             return;
         }
@@ -673,6 +684,23 @@ impl Running {
             .any(|k| self.keys.contains(k))
     }
 
+    /// P / the AUTOFLY chip: fly itself down the streets, or stop.
+    fn toggle_autofly(&mut self) {
+        if self.autofly.take().is_some() {
+            self.say("AUTOFLY OFF", false);
+            return;
+        }
+        let Some(city) = &self.city else { return };
+        if city.towers.is_empty() {
+            return;
+        }
+        let seed = self.start.elapsed().as_nanos() as u64 ^ 0x5DEE_CE66;
+        self.autofly = Some(autofly::AutoFly::new(city, self.camera.pos, self.camera.forward(), seed));
+        self.selected = None;
+        self.entering = None;
+        self.say("AUTOFLY  -  ANY KEY, DRAG OR CLICK TAKES OVER", false);
+    }
+
     /// Where the cursor is along the viewer's timeline, 0..1.
     fn scrub_fraction(&self) -> f32 {
         match self.hud.scrub {
@@ -746,6 +774,7 @@ impl Running {
     }
 
     fn fly_to(&mut self, i: usize) {
+        self.autofly = None;
         let Some(city) = &self.city else { return };
         let (eye, look) = nav::view_point(&city.towers[i], self.camera.pos);
         self.camera.fly_to(eye, look);
@@ -754,6 +783,7 @@ impl Running {
 
     /// Fly into a folder tower; arriving inside opens it.
     fn enter(&mut self, i: usize) {
+        self.autofly = None;
         let Some(city) = &self.city else { return };
         let t = &city.towers[i];
         if !t.entry.is_dir {
@@ -818,8 +848,21 @@ impl Running {
             look_dx: std::mem::take(&mut self.look.0),
             look_dy: std::mem::take(&mut self.look.1),
         };
-        self.camera.update(&input, dt);
-        self.check_entered();
+        let manual = input.forward != 0.0 || input.right != 0.0 || input.up != 0.0 || input.look_dx != 0.0 || input.look_dy != 0.0;
+        if manual && self.autofly.is_some() {
+            self.autofly = None; // you've got it
+        }
+        match (&mut self.autofly, &self.city) {
+            (Some(af), Some(city)) => {
+                let speed = (self.camera.speed * 0.75).max(10.0); // the wheel still sets the pace
+                let (pos, look) = af.step(city, dt, speed);
+                self.camera.steer(pos, look, dt);
+            }
+            _ => {
+                self.camera.update(&input, dt);
+                self.check_entered();
+            }
+        }
 
         // Hover (not through the HUD) + tower animation
         let (w, h) = self.renderer.size();
@@ -961,6 +1004,7 @@ impl Running {
             cats: self.city.as_ref().map(|c| c.cats.clone()).unwrap_or_default(),
             filter: self.filter.clone(),
             tower_fx: self.settings.tower_fx,
+            autofly: self.autofly.is_some(),
             viewer: self.viewer.as_ref().map(|v| hud::ViewerHud {
                 name: v.path().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
                 index: v.index,
@@ -1095,6 +1139,7 @@ impl ApplicationHandler for App {
             settings: settings::Settings::default(),
             scrub_drag: None,
             view_on_load: None,
+            autofly: None,
             search: None,
             matches: Vec::new(),
             match_order: Vec::new(),
@@ -1148,7 +1193,10 @@ impl ApplicationHandler for App {
                         ElementState::Pressed => {
                             match code {
                                 KeyCode::Escape if s.help => s.help = false,
-                                KeyCode::Escape => s.selected = None,
+                                KeyCode::Escape => {
+                                    s.selected = None;
+                                    s.autofly = None;
+                                }
                                 KeyCode::F1 if !event.repeat => s.help = !s.help,
                                 KeyCode::Slash
                                     if !event.repeat
@@ -1174,6 +1222,7 @@ impl ApplicationHandler for App {
                                 }
                                 KeyCode::KeyR if !event.repeat => s.reveal(),
                                 KeyCode::KeyV if !event.repeat => s.view_target(),
+                                KeyCode::KeyP if !event.repeat => s.toggle_autofly(),
                                 KeyCode::KeyT if !event.repeat => {
                                     let back = s.keys.contains(&KeyCode::ShiftLeft) || s.keys.contains(&KeyCode::ShiftRight);
                                     s.step_tower_fx(if back { -1 } else { 1 });
