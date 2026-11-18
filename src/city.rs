@@ -31,6 +31,8 @@ pub struct Tower {
     pub appear: f32,        // 0 → 1 fade-in after the texture arrives
     pub hover: f32,         // eased highlight
     pub select: f32,        // eased "selected" tint
+    pub found: f32,         // eased search match (1 name, 0.5 contents)
+    pub dim: f32,           // eased: searching and this doesn't match
     pub page_hits: Vec<Vec<crate::textgen::LineHit>>, // where names sit on each page
 }
 
@@ -107,6 +109,8 @@ impl City {
                     appear: 0.0,
                     hover: 0.0,
                     select: 0.0,
+                    found: 0.0,
+                    dim: 0.0,
                     page_hits: Vec::new(),
                 }
             })

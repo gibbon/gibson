@@ -11,6 +11,7 @@ const DIM: [f32; 3] = [0.30, 0.58, 0.70];
 const INK: [f32; 3] = [0.01, 0.05, 0.09]; // text on a lit (inverse) button
 const WARN: [f32; 3] = [1.0, 0.55, 0.35];
 const AMBER: [f32; 3] = [1.0, 0.72, 0.28]; // the selected tower
+const SEARCH: [f32; 3] = [0.8, 1.0, 0.62]; // search box and matches
 
 #[derive(Clone, Copy, Debug)]
 pub struct Rect {
@@ -49,6 +50,7 @@ pub struct HudState {
     pub can_back: bool,
     pub can_up: bool,
     pub fps: u32,
+    pub search: Option<(String, usize)>, // open search box: text, matches
     pub hover: Option<HoverInfo>,
     pub selected: Option<(String, PathBuf, bool)>, // clicked tower: name, path, is folder
     pub status: String,
@@ -222,8 +224,28 @@ impl Hud {
             self.text(&fonts.mono, mono, fps_x - u(26.0) as f32 - tw, base, &st.status, col, 1.0);
         }
 
+        // ── Search box, centred under the bar ──────────────────────────────
+        if let Some((q, n)) = &st.search {
+            let bw = u(620.0).min(w - u(24.0));
+            let r = Rect { x: (w - bw) / 2, y: bar_h + u(10.0), w: bw, h: u(38.0) };
+            self.fill(r, [0.0, 0.015, 0.04], 0.85);
+            self.frame(r, SEARCH, 1.0);
+            let by = (r.y + r.h / 2) as f32 + mono * 0.36;
+            let x0 = self.text(&fonts.mono, mono, (r.x + u(12.0)) as f32, by, "SEARCH", SEARCH, 0.8);
+            self.marker(x0 as i32 + u(8.0), r.y + r.h / 2, u(8.0), SEARCH);
+            let qx = self.text(&fonts.mono, mono, x0 + 26.0 * s, by, &q.to_uppercase(), SEARCH, 1.0);
+            self.fill(Rect { x: qx as i32 + u(2.0), y: r.y + u(9.0), w: u(8.0), h: r.h - u(18.0) }, SEARCH, 0.8);
+            let info = if q.is_empty() {
+                "TYPE A NAME   ESC CLOSE".to_string()
+            } else {
+                format!("{n} {}   ENTER NEXT   ESC CLOSE", if *n == 1 { "MATCH" } else { "MATCHES" })
+            };
+            let iw = text_width(&fonts.mono, small_px(s), &info);
+            self.text(&fonts.mono, small_px(s), (r.x + r.w) as f32 - iw - 12.0 * s, by, &info, DIM, 1.0);
+        }
+
         // ── Bottom left: what's under the cursor, or how to drive ───────────
-        let hint = "DRAG look   WASD/QE fly   CLICK fly to   DOUBLE-CLICK / ENTER go in   BACKSPACE up   ALT+← / MOUSE BACK back";
+        let hint = "DRAG look   WASD/QE fly   CLICK fly to   DOUBLE-CLICK open   / search   R show in Explorer   BACKSPACE up   ALT+← back";
         let small = 13.0 * s;
         match &st.hover {
             Some(hv) => {
@@ -319,6 +341,10 @@ impl Hud {
         }
         pen
     }
+}
+
+fn small_px(scale: f32) -> f32 {
+    13.0 * scale
 }
 
 fn text_width(font: &Font, px: f32, text: &str) -> f32 {

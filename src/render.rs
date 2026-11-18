@@ -728,6 +728,11 @@ fn instance_of(t: &crate::city::Tower) -> Instance {
     let mix = |a: [f32; 3], b: [f32; 3], k: f32| [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
     let text = mix(text, [1.0, 0.68, 0.24], k * 0.85);
     let body = mix(body, [0.32, 0.17, 0.03], k * 0.8);
+    // Search: matches burn white-green, everything else fades back.
+    let text = mix(text, [0.8, 1.0, 0.62], t.found * 0.8);
+    let lift = (1.0 - 0.8 * t.dim) * (1.0 + 0.6 * t.found);
+    let text = text.map(|c| c * lift);
+    let body = body.map(|c| c * (1.0 - 0.6 * t.dim));
     let ease = t.appear * t.appear * (3.0 - 2.0 * t.appear);
     Instance {
         base: t.base.to_array(),

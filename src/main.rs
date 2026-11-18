@@ -3,6 +3,7 @@
 mod cache;
 mod camera;
 mod city;
+mod files;
 mod fs_scan;
 mod hud;
 mod nav;
@@ -21,7 +22,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorIcon, Window, WindowId};
@@ -72,6 +73,10 @@ struct Running {
     hot: Option<usize>,          // HUD button under the cursor
     last_click: Option<(Instant, usize, Option<usize>)>, // when, tower, name
     entering: Option<usize>, // tower we're flying into
+    search: Option<String>,  // search box open, with its text
+    matches: Vec<f32>,       // per tower: 1 name matches, 0.5 something inside it does
+    match_order: Vec<usize>, // matching towers, best and nearest first (Enter walks it)
+    match_next: usize,
     cursor_icon: CursorIcon,
     hud_drawn: Instant,
     start: Instant,
@@ -242,6 +247,7 @@ impl Running {
         );
         self.city = Some(city);
         self.path = path;
+        self.update_matches();
     }
 
     /// Left click (press + release without dragging).
@@ -280,12 +286,112 @@ impl Running {
         let Some(city) = &self.city else { return };
         let e = &city.towers[i].entry;
         let Some((name, is_dir)) = e.lines.get(line) else { return };
+        let path = e.path.join(name);
         if *is_dir {
-            let path = e.path.join(name);
             self.load(path, false);
         } else {
-            self.say("FILES OPEN IN THE NEXT MILESTONE", false);
+            self.report(files::open(&path));
         }
+    }
+
+    fn report(&mut self, r: Result<String, String>) {
+        match r {
+            Ok(m) => self.say(&m, false),
+            Err(m) => self.say(&m, true),
+        }
+    }
+
+    /// The file or folder the user means: the name under the cursor, else the tower
+    /// under the cursor, else the selected tower.
+    fn target_path(&self) -> Option<PathBuf> {
+        let city = self.city.as_ref()?;
+        if let (Some(i), Some(n)) = (self.hovered, self.hovered_name) {
+            let e = &city.towers[i].entry;
+            return e.lines.get(n.line).map(|(name, _)| e.path.join(name));
+        }
+        self.hovered.or(self.selected).map(|i| city.towers[i].entry.path.clone())
+    }
+
+    fn reveal(&mut self) {
+        match self.target_path() {
+            Some(p) => self.report(files::reveal(&p)),
+            None => self.say("POINT AT SOMETHING TO SHOW IT IN EXPLORER", false),
+        }
+    }
+
+    // ── Search: type to light up matching towers ───────────────────────────
+    fn open_search(&mut self) {
+        self.search = Some(String::new());
+        self.keys.clear(); // typing mustn't fly
+        self.update_matches();
+    }
+
+    fn close_search(&mut self) {
+        self.search = None;
+        self.update_matches();
+    }
+
+    /// Keys while the search box is open. All are consumed.
+    fn search_key(&mut self, ev: &KeyEvent) {
+        match ev.physical_key {
+            PhysicalKey::Code(KeyCode::Escape) => self.close_search(),
+            PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => self.next_match(),
+            PhysicalKey::Code(KeyCode::Backspace) => {
+                if let Some(q) = &mut self.search {
+                    q.pop();
+                }
+                self.update_matches();
+            }
+            _ => {
+                let add: String = ev.text.as_deref().unwrap_or("").chars().filter(|c| !c.is_control()).collect();
+                if let (Some(q), false) = (&mut self.search, add.is_empty()) {
+                    q.push_str(&add);
+                    self.update_matches();
+                }
+            }
+        }
+    }
+
+    fn update_matches(&mut self) {
+        self.match_next = 0;
+        self.match_order.clear();
+        let q = self.search.as_deref().unwrap_or("").to_lowercase();
+        let Some(city) = &self.city else {
+            self.matches.clear();
+            return;
+        };
+        self.matches = city
+            .towers
+            .iter()
+            .map(|t| {
+                if q.is_empty() {
+                    0.0
+                } else if t.entry.name.to_lowercase().contains(&q) {
+                    1.0
+                } else if t.entry.is_dir && t.entry.lines.iter().any(|(n, _)| n.to_lowercase().contains(&q)) {
+                    0.5
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let pos = self.camera.pos;
+        let dist = |i: usize| city.towers[i].base.distance_squared(pos);
+        let m = &self.matches;
+        let mut order: Vec<usize> = (0..m.len()).filter(|&i| m[i] > 0.0).collect();
+        order.sort_by(|&a, &b| m[b].total_cmp(&m[a]).then(dist(a).total_cmp(&dist(b))));
+        self.match_order = order;
+    }
+
+    /// Enter in the search box: fly to the next match.
+    fn next_match(&mut self) {
+        if self.match_order.is_empty() {
+            return;
+        }
+        let i = self.match_order[self.match_next % self.match_order.len()];
+        self.match_next += 1;
+        self.selected = Some(i);
+        self.fly_to(i);
     }
 
     fn fly_to(&mut self, i: usize) {
@@ -300,8 +406,9 @@ impl Running {
         let Some(city) = &self.city else { return };
         let t = &city.towers[i];
         if !t.entry.is_dir {
-            self.say("FILES OPEN IN THE NEXT MILESTONE", false);
+            let path = t.entry.path.clone();
             self.fly_to(i);
+            self.report(files::open(&path));
             return;
         }
         let (eye, look) = nav::enter_point(t, self.camera.pos);
@@ -382,6 +489,11 @@ impl Running {
                 t.hover += (target - t.hover) * (1.0 - (-dt * 10.0).exp());
                 let sel = if Some(i) == self.selected { 1.0 } else { 0.0 };
                 t.select += (sel - t.select) * (1.0 - (-dt * 6.0).exp());
+                let m = self.matches.get(i).copied().unwrap_or(0.0);
+                let searching = self.search.as_ref().is_some_and(|q| !q.is_empty());
+                let dim = if searching && m == 0.0 { 1.0 } else { 0.0 };
+                t.found += (m - t.found) * (1.0 - (-dt * 8.0).exp());
+                t.dim += (dim - t.dim) * (1.0 - (-dt * 8.0).exp());
             }
         }
         let icon = if self.hot.is_some() || self.hovered.is_some() { CursorIcon::Pointer } else { CursorIcon::Default };
@@ -469,6 +581,7 @@ impl Running {
             can_back: !self.history.is_empty(),
             can_up: self.path.parent().is_some(),
             fps: self.fps,
+            search: self.search.clone().map(|q| (q, self.match_order.len())),
             hover,
             selected,
             status,
@@ -555,6 +668,10 @@ impl ApplicationHandler for App {
             hot: None,
             last_click: None,
             entering: None,
+            search: None,
+            matches: Vec::new(),
+            match_order: Vec::new(),
+            match_next: 0,
             cursor_icon: CursorIcon::Default,
             hud_drawn: now,
             start: now,
@@ -573,11 +690,24 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => s.renderer.resize(size.width, size.height),
             WindowEvent::KeyboardInput { event, .. } => {
+                if s.search.is_some() && event.state == ElementState::Pressed {
+                    s.search_key(&event);
+                    return;
+                }
                 if let PhysicalKey::Code(code) = event.physical_key {
                     match event.state {
                         ElementState::Pressed => {
                             match code {
-                                KeyCode::Escape => event_loop.exit(),
+                                KeyCode::Escape => s.selected = None,
+                                KeyCode::Slash if !event.repeat => s.open_search(),
+                                KeyCode::KeyF
+                                    if !event.repeat
+                                        && (s.keys.contains(&KeyCode::ControlLeft)
+                                            || s.keys.contains(&KeyCode::ControlRight)) =>
+                                {
+                                    s.open_search()
+                                }
+                                KeyCode::KeyR if !event.repeat => s.reveal(),
                                 KeyCode::Backspace if !event.repeat => s.go_up(),
                                 KeyCode::BrowserBack if !event.repeat => s.go_back(),
                                 KeyCode::ArrowLeft
