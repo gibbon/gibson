@@ -2,6 +2,7 @@
 // under the cursor at the bottom, and status messages. Drawn on the CPU into an
 // RGBA image (premultiplied alpha) and only redrawn when something on it changes.
 
+use crate::filetype::Cat;
 use crate::textgen::Fonts;
 use fontdue::Font;
 use std::path::{Path, PathBuf};
@@ -34,6 +35,23 @@ pub enum HudAction {
     Back,        // the folder before this one
     Up,          // the parent folder
     Help,        // show / hide the hotkeys
+    Filter(Option<Cat>), // toggle a file type (None = show all)
+    SearchFilter,        // search: hide non-matches instead of dimming them
+    Effect(usize),       // viewer: pick an effect
+    PlayPause,           // viewer: pause / play the video
+    CloseViewer,
+}
+
+/// The media viewer's overlay.
+#[derive(Clone, PartialEq)]
+pub struct ViewerHud {
+    pub name: String,
+    pub index: usize,
+    pub count: usize,
+    pub size: Option<(u32, u32)>,
+    pub effect: usize,
+    pub video: Option<(f32, f32, bool)>, // time, duration, paused
+    pub error: Option<String>,
 }
 
 /// What's under the cursor, already worded for the panel.
@@ -53,6 +71,10 @@ pub struct HudState {
     pub fps: u32,
     pub search: Option<(String, usize)>, // open search box: text, matches
     pub help: bool,                      // hotkey panel open
+    pub search_filter: bool,             // search hides non-matches
+    pub cats: Vec<(Cat, usize)>,         // file types in this folder, with counts
+    pub filter: Vec<Cat>,                // shown types (empty = all)
+    pub viewer: Option<ViewerHud>,
     pub hover: Option<HoverInfo>,
     pub selected: Option<(String, PathBuf, bool)>, // clicked tower: name, path, is folder
     pub status: String,
@@ -67,19 +89,32 @@ pub struct Hud {
     /// Clickable places, and what clicking them does.
     pub hits: Vec<(Rect, HudAction)>,
     pub bar_h: i32,
+    pub scrub: Option<Rect>, // viewer: the video timeline (click / drag to seek)
     help_open: bool,
+    viewer_open: bool,
     last: Option<HudState>,
     scale: f32,
 }
 
 impl Hud {
     pub fn new() -> Hud {
-        Hud { w: 0, h: 0, px: Vec::new(), hits: Vec::new(), bar_h: 0, help_open: false, last: None, scale: 1.0 }
+        Hud {
+            w: 0,
+            h: 0,
+            px: Vec::new(),
+            hits: Vec::new(),
+            bar_h: 0,
+            scrub: None,
+            help_open: false,
+            viewer_open: false,
+            last: None,
+            scale: 1.0,
+        }
     }
 
     /// True if the cursor is over the HUD (so it shouldn't pick towers behind it).
     pub fn covers(&self, _x: f64, y: f64) -> bool {
-        self.help_open || y < self.bar_h as f64
+        self.help_open || self.viewer_open || y < self.bar_h as f64
     }
 
     /// Redraws if anything changed; returns true when `px` is new.
@@ -93,6 +128,7 @@ impl Hud {
         self.px.clear();
         self.px.resize((w * h * 4) as usize, 0);
         self.hits.clear();
+        self.scrub = None;
         self.draw(st, fonts);
         self.last = Some(st.clone());
         true
@@ -244,10 +280,44 @@ impl Hud {
             self.text(&fonts.mono, mono, hb.x as f32 - u(14.0) as f32 - tw, base, &st.status, col, 1.0);
         }
 
+        // ── File-type filter strip under the bar ───────────────────────────
+        let mut below = bar_h;
+        if !st.cats.is_empty() && st.viewer.is_none() {
+            let strip_h = u(30.0);
+            self.fill(Rect { x: 0, y: bar_h, w, h: strip_h }, [0.0, 0.012, 0.035], 0.62);
+            self.fill(Rect { x: 0, y: bar_h + strip_h - 1, w, h: 1 }, DIM, 0.5);
+            let small = 13.0 * s;
+            let by = (bar_h + strip_h / 2) as f32 + small * 0.36;
+            let mut x = self.text(&fonts.mono, small, u(14.0) as f32, by, "SHOW", DIM, 1.0) as i32 + u(12.0);
+            let chips: Vec<(Option<Cat>, String, bool)> = std::iter::once((
+                None,
+                format!("ALL {}", st.cats.iter().map(|c| c.1).sum::<usize>()),
+                st.filter.is_empty(),
+            ))
+            .chain(st.cats.iter().map(|&(c, n)| (Some(c), format!("{} {n}", c.label()), st.filter.contains(&c))))
+            .collect();
+            for (cat, label, on) in chips {
+                let tw = text_width(&fonts.mono, small, &label).ceil() as i32;
+                let r = Rect { x, y: bar_h + u(5.0), w: tw + u(14.0), h: strip_h - u(10.0) };
+                let hot = st.hot == Some(self.hits.len());
+                if on {
+                    self.fill(r, CYAN, 0.8);
+                } else if hot {
+                    self.fill(r, CYAN, 0.2);
+                }
+                self.frame(r, CYAN, if on || hot { 1.0 } else { 0.45 });
+                self.text(&fonts.mono, small, (r.x + u(7.0)) as f32, by, &label, if on { INK } else { CYAN }, 1.0);
+                self.hits.push((r, HudAction::Filter(cat)));
+                x += r.w + u(6.0);
+            }
+            below = bar_h + strip_h;
+        }
+        self.bar_h = below;
+
         // ── Search box, centred under the bar ──────────────────────────────
-        if let Some((q, n)) = &st.search {
-            let bw = u(620.0).min(w - u(24.0));
-            let r = Rect { x: (w - bw) / 2, y: bar_h + u(10.0), w: bw, h: u(38.0) };
+        if let (Some((q, n)), None) = (&st.search, &st.viewer) {
+            let bw = u(700.0).min(w - u(24.0));
+            let r = Rect { x: (w - bw) / 2, y: below + u(10.0), w: bw, h: u(38.0) };
             self.fill(r, [0.0, 0.015, 0.04], 0.85);
             self.frame(r, SEARCH, 1.0);
             let by = (r.y + r.h / 2) as f32 + mono * 0.36;
@@ -261,7 +331,32 @@ impl Hud {
                 format!("{n} {}   ENTER NEXT   ESC CLOSE", if *n == 1 { "MATCH" } else { "MATCHES" })
             };
             let iw = text_width(&fonts.mono, small_px(s), &info);
-            self.text(&fonts.mono, small_px(s), (r.x + r.w) as f32 - iw - 12.0 * s, by, &info, DIM, 1.0);
+            let ix = (r.x + r.w) as f32 - iw - 12.0 * s;
+            self.text(&fonts.mono, small_px(s), ix, by, &info, DIM, 1.0);
+            // FILTER switch: hide what doesn't match, live, instead of dimming it.
+            let label = if st.search_filter { "FILTER ON  TAB" } else { "FILTER OFF  TAB" };
+            let fw = text_width(&fonts.mono, small_px(s), label).ceil() as i32;
+            let fr = Rect { x: ix as i32 - fw - u(30.0), y: r.y + u(7.0), w: fw + u(14.0), h: r.h - u(14.0) };
+            let hot = st.hot == Some(self.hits.len());
+            if st.search_filter {
+                self.fill(fr, SEARCH, 0.85);
+            } else if hot {
+                self.fill(fr, SEARCH, 0.2);
+            }
+            self.frame(fr, SEARCH, 0.9);
+            let col = if st.search_filter { INK } else { SEARCH };
+            self.text(&fonts.mono, small_px(s), (fr.x + u(7.0)) as f32, by, label, col, 1.0);
+            self.hits.push((fr, HudAction::SearchFilter));
+        }
+
+        self.viewer_open = st.viewer.is_some();
+        if let Some(v) = &st.viewer {
+            self.viewer_overlay(v, st.hot, fonts);
+            self.help_open = st.help;
+            if st.help {
+                self.help_panel(fonts);
+            }
+            return;
         }
 
         // ── Bottom left: what's under the cursor, or how to drive ───────────
@@ -291,6 +386,115 @@ impl Hud {
         if st.help {
             self.help_panel(fonts);
         }
+    }
+
+    /// The viewer: title and effects along the top, the timeline at the bottom.
+    fn viewer_overlay(&mut self, v: &ViewerHud, hot_hit: Option<usize>, fonts: &Fonts) {
+        let s = self.scale;
+        let u = |x: f32| (x * s).round() as i32;
+        let (w, h) = (self.w as i32, self.h as i32);
+        let mono = 15.0 * s;
+        let small = 13.0 * s;
+
+        // Title, centred under the bar.
+        let top = self.bar_h + u(14.0);
+        let big = 20.0 * s;
+        let name = shorten(&fonts.wide, big, &v.name.to_uppercase(), (w - u(320.0)) as f32);
+        let nw = text_width(&fonts.wide, big, &name);
+        self.text(&fonts.wide, big, (w as f32 - nw) / 2.0, (top + u(22.0)) as f32, &name, CYAN, 1.0);
+        let mut info = format!("{} / {}", v.index + 1, v.count);
+        if let Some((pw, ph)) = v.size {
+            info += &format!("   {pw} × {ph}");
+        }
+        let iw = text_width(&fonts.mono, small, &info);
+        self.text(&fonts.mono, small, (w as f32 - iw) / 2.0, (top + u(42.0)) as f32, &info, DIM, 1.0);
+
+        // Close button, top right under the bar.
+        let cl = "CLOSE  ESC";
+        let cw = text_width(&fonts.mono, small, cl).ceil() as i32;
+        let cr = Rect { x: w - cw - u(30.0), y: top, w: cw + u(16.0), h: u(26.0) };
+        let hot = hot_hit == Some(self.hits.len());
+        if hot {
+            self.fill(cr, CYAN, 0.22);
+        }
+        self.frame(cr, CYAN, 0.8);
+        self.text(&fonts.mono, small, (cr.x + u(8.0)) as f32, (cr.y + u(18.0)) as f32, cl, CYAN, 1.0);
+        self.hits.push((cr, HudAction::CloseViewer));
+
+        // Effects: a row of buttons above the timeline, the current one lit.
+        let mut x = u(16.0);
+        let ey = h - u(98.0);
+        self.text(&fonts.mono, small, x as f32, (ey + u(18.0)) as f32, "EFFECT  E", DIM, 1.0);
+        x += u(84.0);
+        for (i, name) in crate::viewer::EFFECTS.iter().enumerate() {
+            let label = format!("{} {name}", i + 1);
+            let tw = text_width(&fonts.mono, small, &label).ceil() as i32;
+            let r = Rect { x, y: ey, w: tw + u(14.0), h: u(26.0) };
+            let hot = hot_hit == Some(self.hits.len());
+            if i == v.effect {
+                self.fill(r, AMBER, 0.85);
+            } else if hot {
+                self.fill(r, AMBER, 0.2);
+            }
+            self.frame(r, AMBER, if i == v.effect || hot { 1.0 } else { 0.5 });
+            self.text(&fonts.mono, small, (r.x + u(7.0)) as f32, (r.y + u(18.0)) as f32, &label, if i == v.effect { INK } else { AMBER }, 1.0);
+            self.hits.push((r, HudAction::Effect(i)));
+            x += r.w + u(6.0);
+        }
+
+        if let Some(e) = &v.error {
+            let ew = text_width(&fonts.mono, mono, e);
+            self.text(&fonts.mono, mono, (w as f32 - ew) / 2.0, h as f32 / 2.0, e, WARN, 1.0);
+        }
+
+        // Video: play / pause, timeline, times.
+        let hint;
+        if let Some((t, dur, paused)) = v.video {
+            let y = h - u(52.0);
+            let pb = Rect { x: u(16.0), y: y - u(14.0), w: u(30.0), h: u(28.0) };
+            let hot = hot_hit == Some(self.hits.len());
+            if hot {
+                self.fill(pb, CYAN, 0.22);
+            }
+            self.frame(pb, CYAN, 0.8);
+            let (cx, cy) = (pb.x + pb.w / 2, pb.y + pb.h / 2);
+            if paused {
+                // play triangle
+                for dx in 0..u(12.0) {
+                    let half = (u(12.0) - dx) / 2;
+                    for dy in -half..=half {
+                        self.blend(cx - u(5.0) + dx, cy + dy, CYAN, 1.0);
+                    }
+                }
+            } else {
+                self.fill(Rect { x: cx - u(6.0), y: cy - u(6.0), w: u(4.0), h: u(12.0) }, CYAN, 1.0);
+                self.fill(Rect { x: cx + u(2.0), y: cy - u(6.0), w: u(4.0), h: u(12.0) }, CYAN, 1.0);
+            }
+            self.hits.push((pb, HudAction::PlayPause));
+
+            let now = crate::viewer::clock(t);
+            let total = crate::viewer::clock(dur);
+            let tw = text_width(&fonts.mono, mono, &total).ceil() as i32;
+            let x0 = pb.x + pb.w + u(16.0) + tw + u(12.0);
+            let x1 = w - u(28.0) - tw;
+            let bar = Rect { x: x0, y: y - u(3.0), w: (x1 - x0).max(10), h: u(6.0) };
+            self.fill(bar, DIM, 0.45);
+            let frac = if dur > 0.0 { (t / dur).clamp(0.0, 1.0) } else { 0.0 };
+            let done = (bar.w as f32 * frac) as i32;
+            self.fill(Rect { w: done, ..bar }, CYAN, 0.95);
+            self.fill(Rect { x: bar.x + done - u(2.0), y: bar.y - u(6.0), w: u(4.0), h: bar.h + u(12.0) }, AMBER, 1.0);
+            // tick every 10%
+            for k in 1..10 {
+                self.fill(Rect { x: bar.x + bar.w * k / 10, y: bar.y + bar.h + u(3.0), w: 1, h: u(4.0) }, DIM, 0.8);
+            }
+            self.text(&fonts.mono, mono, (pb.x + pb.w + u(12.0)) as f32, (y + u(5.0)) as f32, &now, CYAN, 1.0);
+            self.text(&fonts.mono, mono, (x1 + u(14.0)) as f32, (y + u(5.0)) as f32, &total, DIM, 1.0);
+            self.scrub = Some(Rect { y: bar.y - u(12.0), h: bar.h + u(24.0), ..bar });
+            hint = "SPACE pause   LEFT / RIGHT 5 s (SHIFT 30 s)   CLICK / DRAG timeline   [ ] previous / next   E effect   O open in app   ESC close";
+        } else {
+            hint = "[ ] previous / next   E effect   1-6 pick an effect   O open in app   ESC close";
+        }
+        self.text(&fonts.mono, small, u(16.0) as f32, (h - u(12.0)) as f32, hint, DIM, 0.9);
     }
 
     /// The hotkey panel, centred, in two columns of sections.
@@ -448,8 +652,26 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("ENTER", "fly to the next match"),
         ("ESC", "close the search"),
     ]),
+    ("VIEWER (IMAGES, VIDEO)", &[
+        ("V  /  DOUBLE-CLICK", "open the full picture or video"),
+        ("SPACE  /  LEFT RIGHT", "pause, jump 5 s (shift: 30 s)"),
+        ("E  /  1-6", "change the effect"),
+        ("[  ]", "previous / next in the folder"),
+    ]),
     ("HELP", &[("?  /  F1", "show or hide this")]),
 ];
+
+/// Cuts `text` down with "…" until it fits `max_w`.
+fn shorten(font: &Font, px: f32, text: &str, max_w: f32) -> String {
+    if text_width(font, px, text) <= max_w {
+        return text.to_string();
+    }
+    let mut v: Vec<char> = text.chars().collect();
+    while !v.is_empty() && text_width(font, px, &(v.iter().collect::<String>() + "…")) > max_w {
+        v.pop();
+    }
+    v.into_iter().collect::<String>() + "…"
+}
 
 fn small_px(scale: f32) -> f32 {
     13.0 * scale

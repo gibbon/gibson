@@ -551,6 +551,30 @@ fn mip_chain(base: &[u8]) -> Vec<u8> {
     out
 }
 
+/// A one-row strip of characters from sparse to dense, for the viewer's data-mosaic
+/// effect: (width, height, R8 pixels). Must match GLYPHS in viewer.wgsl.
+pub fn glyph_strip(fonts: &Fonts) -> (u32, u32, Vec<u8>) {
+    const RAMP: &str = " .:-=+*o#%@";
+    let (cw, ch) = (16u32, 28u32);
+    let n = RAMP.chars().count() as u32;
+    let mut px = vec![0u8; (cw * n * ch) as usize];
+    for (i, c) in RAMP.chars().enumerate() {
+        let gl = glyph(&fonts.mono, c, 24.0);
+        let (m, bmp) = (&gl.0, &gl.1);
+        let x0 = i as i32 * cw as i32 + (cw as i32 - m.width as i32) / 2;
+        let y0 = 22 - m.height as i32 - m.ymin;
+        for y in 0..m.height {
+            for x in 0..m.width {
+                let (tx, ty) = (x0 + x as i32, y0 + y as i32);
+                if tx >= 0 && ty >= 0 && (tx as u32) < cw * n && (ty as u32) < ch {
+                    px[(ty as u32 * cw * n + tx as u32) as usize] = bmp[y * m.width + x];
+                }
+            }
+        }
+    }
+    (cw * n, ch, px)
+}
+
 /// Bytes in one page's full mip chain.
 pub fn mips_len() -> usize {
     (0..MIP_LEVELS).map(|l| (mip_size(l).0 * mip_size(l).1) as usize).sum()

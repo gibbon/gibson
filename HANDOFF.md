@@ -47,7 +47,14 @@ banking flights down lanes.
    12 fps, decoded by `ffmpeg` on PATH) with the glitch shader. Screenshots:
    use PrintWindow on the Gibson window only (never full-screen captures —
    the user's other windows are private), and don't send synthetic input
-   while the user is at the machine.
+   while the user is at the machine. To test UI without touching the user's
+   desktop: post keys/clicks to the Gibson HWND only (PostMessage WM_KEYDOWN /
+   WM_MOUSEMOVE+WM_LBUTTONDOWN), and `gibson <file>` opens the viewer on it.
+   Also done: ? / F1 help panel; file-type filter strip; search FILTER (Tab)
+   hides non-matches live; media viewer (no sound yet — the user wants sound
+   as a later step): images full size, videos streamed via ffmpeg with
+   timeline scrubbing, 6 effects (clean, hologram, CRT, thermal, data
+   mosaic, edge glow), [ ] steps through the folder's media.
 4. **Alive** — live updates (notify crate), autopilot flythrough/screensaver,
    colour themes (e.g. the film's orange/magenta "under attack" palette).
 5. **Cross-platform** — verify macOS/Linux, then a web build.

@@ -4,12 +4,14 @@ mod cache;
 mod camera;
 mod city;
 mod files;
+mod filetype;
 mod fs_scan;
 mod hud;
 mod nav;
 mod preview;
 mod render;
 mod textgen;
+mod viewer;
 
 use camera::{Camera, FlyInput};
 use city::City;
@@ -43,7 +45,7 @@ enum Msg {
     Drives(Vec<PathBuf>),
 }
 
-const PAGE_UPLOADS_PER_FRAME: usize = 16;
+const PAGE_UPLOADS_PER_FRAME: usize = 8; // ~6 MB per frame: big folders load without hitches
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const CLICK_SLOP: f64 = 5.0; // pixels the mouse may move and still count as a click
 const HUD_MIN_INTERVAL: Duration = Duration::from_millis(33); // HUD redraws at most ~30/s
@@ -88,6 +90,12 @@ struct Running {
     last_click: Option<(Instant, usize, Option<usize>)>, // when, tower, name
     entering: Option<usize>, // tower we're flying into
     help: bool,              // hotkey panel open
+    filter: Vec<filetype::Cat>, // file types shown (empty = all)
+    search_filter: bool,     // search hides non-matches (live) instead of dimming
+    viewer: Option<viewer::Viewer>,
+    effect: usize,           // viewer effect, remembered between pictures
+    scrub_drag: Option<f32>, // dragging the viewer's timeline: where (0..1)
+    view_on_load: Option<PathBuf>, // started with a file: view it once its folder is up
     search: Option<String>,  // search box open, with its text
     matches: Vec<f32>,       // per tower: 1 name matches, 0.5 something inside it does
     match_order: Vec<usize>, // matching towers, best and nearest first (Enter walks it)
@@ -99,10 +107,13 @@ struct Running {
     fps_frames: u32,
     fps_time: Instant,
     fps: u32,
+    city_since: Instant,   // when the current city went up
+    stuck_logged: bool,    // reported towers that never finished building
 }
 
 struct App {
     start_path: PathBuf,
+    start_file: Option<PathBuf>, // given a file: open its folder and view it
     state: Option<Running>,
 }
 
@@ -177,6 +188,18 @@ impl Running {
                 }
                 Msg::Drives(d) => self.drives = d,
                 _ => {} // stale: from a folder we've already left
+            }
+        }
+        // Towers still unbuilt long after the city went up: say which (a file that
+        // hangs its decoder, say), once.
+        if let Some(city) = &self.city {
+            if !self.stuck_logged && self.pending.is_empty() && self.city_since.elapsed() > Duration::from_secs(15) {
+                let stuck: Vec<&str> =
+                    city.towers.iter().filter(|t| t.layer.is_none()).map(|t| t.entry.name.as_str()).take(8).collect();
+                if !stuck.is_empty() {
+                    log::warn!("towers still unbuilt after 15 s: {stuck:?}");
+                }
+                self.stuck_logged = true;
             }
         }
         // Upload a few pages per frame so loading never stutters.
@@ -303,7 +326,17 @@ impl Running {
         );
         self.city = Some(city);
         self.path = path;
+        self.city_since = Instant::now();
+        self.stuck_logged = false;
+        self.filter.clear();
         self.update_matches();
+        if let Some(file) = self.view_on_load.take() {
+            let i = self.city.as_ref().and_then(|c| c.towers.iter().position(|t| t.entry.path == file));
+            match i {
+                Some(i) => self.view_tower(i),
+                None => self.open_viewer(vec![file], 0),
+            }
+        }
     }
 
     /// Plays the nearest few videos (looping clips decoded by FFmpeg); the others show
@@ -381,11 +414,31 @@ impl Running {
                 hud::HudAction::Back => self.go_back(),
                 hud::HudAction::Up => self.go_up(),
                 hud::HudAction::Help => self.help = !self.help,
+                hud::HudAction::Filter(None) => self.filter.clear(),
+                hud::HudAction::Filter(Some(c)) => {
+                    match self.filter.iter().position(|&f| f == c) {
+                        Some(k) => {
+                            self.filter.remove(k);
+                        }
+                        None => self.filter.push(c),
+                    }
+                }
+                hud::HudAction::SearchFilter => self.search_filter = !self.search_filter,
+                hud::HudAction::Effect(e) => self.set_effect(e),
+                hud::HudAction::PlayPause => {
+                    if let Some(v) = &mut self.viewer {
+                        v.toggle_pause();
+                    }
+                }
+                hud::HudAction::CloseViewer => self.viewer = None,
             }
             return;
         }
         if self.help {
             self.help = false; // a click outside the panel closes it
+            return;
+        }
+        if self.viewer.is_some() {
             return;
         }
         let Some(i) = self.hovered else { return };
@@ -415,9 +468,132 @@ impl Running {
         let path = e.path.join(name);
         if *is_dir {
             self.load(path, false);
+        } else if preview::kind(&path).is_some() {
+            // Step through the pictures and videos listed on this tower.
+            let items: Vec<PathBuf> = e
+                .lines
+                .iter()
+                .filter(|(n, d)| !*d && preview::kind(Path::new(n)).is_some())
+                .map(|(n, _)| e.path.join(n))
+                .collect();
+            let at = items.iter().position(|p| *p == path).unwrap_or(0);
+            self.open_viewer(items, at);
         } else {
             self.report(files::open(&path));
         }
+    }
+
+    /// Opens the media viewer on `items[at]`.
+    fn open_viewer(&mut self, items: Vec<PathBuf>, at: usize) {
+        if items.is_empty() {
+            return;
+        }
+        if preview::kind(&items[at]) == Some(preview::PvKind::Video) && !preview::have_ffmpeg() {
+            self.say("VIDEOS NEED FFMPEG INSTALLED", true);
+            return;
+        }
+        self.keys.clear();
+        self.search = None;
+        self.help = false;
+        self.camera.autopilot = None;
+        self.viewer = Some(viewer::Viewer::open(items, at, self.effect, self.renderer.size()));
+    }
+
+    /// Opens the viewer on tower `i`, stepping through the city's pictures and videos.
+    fn view_tower(&mut self, i: usize) {
+        let Some(city) = &self.city else { return };
+        let media: Vec<usize> = (0..city.towers.len()).filter(|&k| city.towers[k].pv_kind.is_some()).collect();
+        let items: Vec<PathBuf> = media.iter().map(|&k| city.towers[k].entry.path.clone()).collect();
+        let at = media.iter().position(|&k| k == i).unwrap_or(0);
+        self.open_viewer(items, at);
+    }
+
+    /// V: view what's under the cursor (a tower, or a name on one) or the selection.
+    fn view_target(&mut self) {
+        let Some(city) = &self.city else { return };
+        if let (Some(i), Some(n)) = (self.hovered, self.hovered_name) {
+            if let Some((name, false)) = city.towers[i].entry.lines.get(n.line) {
+                if preview::kind(Path::new(name)).is_some() {
+                    self.open_child(i, n.line);
+                    return;
+                }
+            }
+        }
+        match self.hovered.or(self.selected) {
+            Some(i) if city.towers[i].pv_kind.is_some() => self.view_tower(i),
+            _ => self.say("POINT AT AN IMAGE OR VIDEO TO VIEW IT", false),
+        }
+    }
+
+    fn set_effect(&mut self, e: usize) {
+        self.effect = e % viewer::EFFECTS.len();
+        if let Some(v) = &mut self.viewer {
+            v.effect = self.effect;
+        }
+    }
+
+    /// Keys while the viewer is open. All are consumed (no flying).
+    fn viewer_key(&mut self, ev: &KeyEvent) {
+        let PhysicalKey::Code(code) = ev.physical_key else { return };
+        let shift = self.keys.contains(&KeyCode::ShiftLeft) || self.keys.contains(&KeyCode::ShiftRight);
+        let screen = self.renderer.size();
+        let n = viewer::EFFECTS.len();
+        match code {
+            KeyCode::Escape if self.help => self.help = false,
+            KeyCode::Escape => self.viewer = None,
+            KeyCode::F1 => self.help = !self.help,
+            KeyCode::Space if !ev.repeat => {
+                if let Some(v) = &mut self.viewer {
+                    v.toggle_pause();
+                }
+            }
+            KeyCode::ArrowLeft | KeyCode::ArrowRight => {
+                let by = if shift { 30.0 } else { 5.0 } * if code == KeyCode::ArrowLeft { -1.0 } else { 1.0 };
+                if let Some(v) = &mut self.viewer {
+                    v.seek_by(by);
+                }
+            }
+            KeyCode::BracketLeft | KeyCode::PageUp | KeyCode::BracketRight | KeyCode::PageDown if !ev.repeat => {
+                let by = if matches!(code, KeyCode::BracketLeft | KeyCode::PageUp) { -1 } else { 1 };
+                if let Some(v) = &mut self.viewer {
+                    v.step(by, screen);
+                }
+            }
+            KeyCode::KeyE if !ev.repeat => self.set_effect(if shift { self.effect + n - 1 } else { self.effect + 1 }),
+            KeyCode::Digit1 | KeyCode::Digit2 | KeyCode::Digit3 | KeyCode::Digit4 | KeyCode::Digit5 | KeyCode::Digit6 => {
+                let d = match code {
+                    KeyCode::Digit1 => 0,
+                    KeyCode::Digit2 => 1,
+                    KeyCode::Digit3 => 2,
+                    KeyCode::Digit4 => 3,
+                    KeyCode::Digit5 => 4,
+                    _ => 5,
+                };
+                self.set_effect(d);
+            }
+            KeyCode::KeyO if !ev.repeat => {
+                if let Some(v) = &self.viewer {
+                    let p = v.path().to_path_buf();
+                    self.report(files::open(&p));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Where the viewer's picture goes: fitted between the top overlay and the timeline.
+    fn viewer_rect(&self, w: u32, h: u32) -> [f32; 4] {
+        let s = self.window.scale_factor() as f32;
+        let Some(v) = &self.viewer else { return [0.0; 4] };
+        let (pw, ph) = v.size.unwrap_or((16, 9));
+        let top = self.hud.bar_h as f32 + 64.0 * s;
+        let bottom = h as f32 - 116.0 * s;
+        let (aw, ah) = (w as f32 - 48.0 * s, (bottom - top).max(10.0));
+        let k = (aw / pw as f32).min(ah / ph as f32);
+        let (dw, dh) = (pw as f32 * k, ph as f32 * k);
+        let x0 = (w as f32 - dw) / 2.0;
+        let y0 = top + (ah - dh) / 2.0;
+        [x0, y0, x0 + dw, y0 + dh]
     }
 
     fn report(&mut self, r: Result<String, String>) {
@@ -457,11 +633,20 @@ impl Running {
         self.update_matches();
     }
 
+    /// Where the cursor is along the viewer's timeline, 0..1.
+    fn scrub_fraction(&self) -> f32 {
+        match self.hud.scrub {
+            Some(r) => ((self.cursor.0 as f32 - r.x as f32) / r.w.max(1) as f32).clamp(0.0, 1.0),
+            None => 0.0,
+        }
+    }
+
     /// Keys while the search box is open. All are consumed.
     fn search_key(&mut self, ev: &KeyEvent) {
         match ev.physical_key {
             PhysicalKey::Code(KeyCode::Escape) => self.close_search(),
             PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => self.next_match(),
+            PhysicalKey::Code(KeyCode::Tab) => self.search_filter = !self.search_filter,
             PhysicalKey::Code(KeyCode::Backspace) => {
                 if let Some(q) = &mut self.search {
                     q.pop();
@@ -533,6 +718,10 @@ impl Running {
         let t = &city.towers[i];
         if !t.entry.is_dir {
             let path = t.entry.path.clone();
+            if t.pv_kind.is_some() {
+                self.view_tower(i);
+                return;
+            }
             self.fly_to(i);
             self.report(files::open(&path));
             return;
@@ -544,7 +733,7 @@ impl Running {
 
     /// Opens a folder once the camera is inside its tower (flown in, or by autopilot).
     fn check_entered(&mut self) {
-        if self.loading.is_some() {
+        if self.loading.is_some() || self.viewer.is_some() {
             return;
         }
         let Some(city) = &self.city else { return };
@@ -617,7 +806,12 @@ impl Running {
                 t.select += (sel - t.select) * (1.0 - (-dt * 6.0).exp());
                 let m = self.matches.get(i).copied().unwrap_or(0.0);
                 let searching = self.search.as_ref().is_some_and(|q| !q.is_empty());
-                let dim = if searching && m == 0.0 { 1.0 } else { 0.0 };
+                // Filters: by file type, and (live) by search when its FILTER is on.
+                let by_type = self.filter.is_empty() || self.filter.contains(&t.cat);
+                let by_search = !(self.search_filter && searching && m == 0.0);
+                let shown = if by_type && by_search { 1.0 } else { 0.0 };
+                t.shown += (shown - t.shown) * (1.0 - (-dt * 7.0).exp());
+                let dim = if searching && m == 0.0 && !self.search_filter { 1.0 } else { 0.0 };
                 t.found += (m - t.found) * (1.0 - (-dt * 8.0).exp());
                 t.dim += (dim - t.dim) * (1.0 - (-dt * 8.0).exp());
             }
@@ -638,11 +832,23 @@ impl Running {
             _ => None,
         };
 
+        // Viewer: take the picture / video frame due now, and where to draw it.
+        let mut vd = None;
+        if let Some(v) = &mut self.viewer {
+            v.update();
+            if let Some(f) = v.frame.take() {
+                self.renderer.viewer_image(f.w, f.h, &f.px);
+            }
+        }
+        if let Some(v) = &self.viewer {
+            vd = Some(render::ViewerDraw { effect: v.effect as u32, time, open: v.open_amount(), rect: self.viewer_rect(w, h) });
+        }
+
         let view_proj = self.camera.proj(w as f32 / h.max(1) as f32) * self.camera.view();
         let t1 = Instant::now();
         self.update_hud(w, h);
         let t_hud = t1.elapsed();
-        self.renderer.render(view_proj, self.camera.pos, time, self.city.as_ref(), hl);
+        self.renderer.render(view_proj, self.camera.pos, time, self.city.as_ref(), hl, vd);
         let total = t0.elapsed();
         if total > Duration::from_millis(40) {
             log::warn!(
@@ -711,6 +917,24 @@ impl Running {
             fps: self.fps,
             search: self.search.clone().map(|q| (q, self.match_order.len())),
             help: self.help,
+            search_filter: self.search_filter,
+            cats: self.city.as_ref().map(|c| c.cats.clone()).unwrap_or_default(),
+            filter: self.filter.clone(),
+            viewer: self.viewer.as_ref().map(|v| hud::ViewerHud {
+                name: v.path().file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+                index: v.index,
+                count: v.items.len(),
+                size: v.size,
+                effect: v.effect,
+                video: v.video.as_ref().map(|vi| {
+                    let t = match self.scrub_drag {
+                        Some(f) => f * vi.duration,
+                        None => vi.time(),
+                    };
+                    (t, vi.duration, vi.paused)
+                }),
+                error: v.error.clone(),
+            }),
             hover,
             selected,
             status,
@@ -811,6 +1035,12 @@ impl ApplicationHandler for App {
             last_click: None,
             entering: None,
             help: false,
+            filter: Vec::new(),
+            search_filter: false,
+            viewer: None,
+            effect: 1,
+            scrub_drag: None,
+            view_on_load: None,
             search: None,
             matches: Vec::new(),
             match_order: Vec::new(),
@@ -822,7 +1052,12 @@ impl ApplicationHandler for App {
             fps_frames: 0,
             fps_time: now,
             fps: 0,
+            city_since: now,
+            stuck_logged: false,
         };
+        let (gw, gh, gpx) = textgen::glyph_strip(&s.fonts);
+        s.renderer.set_glyph_atlas(gw, gh, &gpx);
+        s.view_on_load = self.start_file.take();
         s.load(self.start_path.clone(), false);
         self.state = Some(s);
     }
@@ -833,6 +1068,20 @@ impl ApplicationHandler for App {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::Resized(size) => s.renderer.resize(size.width, size.height),
             WindowEvent::KeyboardInput { event, .. } => {
+                if s.viewer.is_some() {
+                    if let PhysicalKey::Code(code) = event.physical_key {
+                        match event.state {
+                            ElementState::Pressed => {
+                                s.viewer_key(&event);
+                                s.keys.insert(code);
+                            }
+                            ElementState::Released => {
+                                s.keys.remove(&code);
+                            }
+                        }
+                    }
+                    return;
+                }
                 if s.search.is_some() && event.state == ElementState::Pressed {
                     s.search_key(&event);
                     return;
@@ -859,6 +1108,7 @@ impl ApplicationHandler for App {
                                     s.open_search()
                                 }
                                 KeyCode::KeyR if !event.repeat => s.reveal(),
+                                KeyCode::KeyV if !event.repeat => s.view_target(),
                                 KeyCode::Backspace if !event.repeat => s.go_up(),
                                 KeyCode::BrowserBack if !event.repeat => s.go_back(),
                                 KeyCode::ArrowLeft
@@ -889,6 +1139,27 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Back, .. } => s.go_back(),
             WindowEvent::MouseInput { state, button, .. } => {
+                if s.viewer.is_some() && button == MouseButton::Left {
+                    let down = state == ElementState::Pressed;
+                    let on_bar = s.hud.scrub.is_some_and(|r| r.contains(s.cursor.0, s.cursor.1));
+                    if down && on_bar {
+                        s.scrub_drag = Some(s.scrub_fraction());
+                    } else if !down && s.scrub_drag.is_some() {
+                        let f = s.scrub_fraction();
+                        s.scrub_drag = None;
+                        if let Some(v) = &mut s.viewer {
+                            if let Some(d) = v.video.as_ref().map(|vi| vi.duration) {
+                                v.seek(f * d);
+                            }
+                        }
+                    } else if !down {
+                        s.click();
+                    }
+                    return;
+                }
+                if s.viewer.is_some() {
+                    return;
+                }
                 if matches!(button, MouseButton::Left | MouseButton::Right) {
                     let down = state == ElementState::Pressed;
                     s.dragging = down;
@@ -906,6 +1177,9 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 s.cursor = (position.x, position.y);
+                if s.scrub_drag.is_some() {
+                    s.scrub_drag = Some(s.scrub_fraction());
+                }
                 if s.dragging {
                     if let Some((lx, ly)) = s.last_cursor {
                         s.look.0 += (position.x - lx) as f32;
@@ -949,6 +1223,14 @@ fn main() {
 
     let event_loop = EventLoop::new().expect("event loop");
     event_loop.set_control_flow(ControlFlow::Poll);
-    let mut app = App { start_path, state: None };
+    // Given a file: open its folder, and the viewer on it (for pictures and videos).
+    let (start_path, start_file) = if start_path.is_file() {
+        let folder = start_path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+        let view = preview::kind(&start_path).is_some().then_some(start_path);
+        (folder, view)
+    } else {
+        (start_path, None)
+    };
+    let mut app = App { start_path, start_file, state: None };
     event_loop.run_app(&mut app).expect("run");
 }

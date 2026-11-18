@@ -28,6 +28,24 @@ pub struct Globals {
     hl_rect: [f32; 4],
 }
 
+/// The media viewer, for this frame: which effect, the time, how far open (0..1),
+/// and where the picture goes on screen (pixels).
+#[derive(Clone, Copy)]
+pub struct ViewerDraw {
+    pub effect: u32,
+    pub time: f32,
+    pub open: f32,
+    pub rect: [f32; 4],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Pod, Zeroable)]
+struct ViewerUniform {
+    rect: [f32; 4],
+    screen: [f32; 4],
+    p: [f32; 4],
+}
+
 /// A name on a tower face to light up: the texture layer of its page, and its box
 /// on that page in 0..1 page coordinates.
 #[derive(Clone, Copy)]
@@ -113,6 +131,14 @@ pub struct Renderer {
     hud_layout: wgpu::BindGroupLayout,
     hud_pipe: wgpu::RenderPipeline,
     hud: Option<HudTex>,
+
+    viewer_layout: wgpu::BindGroupLayout,
+    viewer_pipe: wgpu::RenderPipeline,
+    viewer_buf: wgpu::Buffer,
+    viewer_sampler: wgpu::Sampler,
+    viewer_img: (wgpu::Texture, wgpu::TextureView, u32, u32),
+    glyph_view: wgpu::TextureView,
+    viewer_bind: wgpu::BindGroup,
 }
 
 struct HudTex {
@@ -441,6 +467,66 @@ impl Renderer {
             cache: None,
         });
 
+        // ── Media viewer ─────────────────────────────────────────────────────
+        let viewer_mod = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("viewer"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/viewer.wgsl").into()),
+        });
+        let viewer_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("viewer"),
+            entries: &[
+                uniform_entry(0, wgpu::ShaderStages::FRAGMENT),
+                tex_entry(1, wgpu::TextureViewDimension::D2),
+                sampler_entry(2),
+                tex_entry(3, wgpu::TextureViewDimension::D2),
+            ],
+        });
+        let viewer_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("viewer"),
+            bind_group_layouts: &[Some(&viewer_layout)],
+            immediate_size: 0,
+        });
+        let viewer_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("viewer"),
+            layout: Some(&viewer_pl),
+            vertex: wgpu::VertexState {
+                module: &viewer_mod,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &viewer_mod,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+        let viewer_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("viewer"),
+            size: std::mem::size_of::<ViewerUniform>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let viewer_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("viewer"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let viewer_img = make_viewer_tex(&device, 1, 1, wgpu::TextureFormat::Rgba8UnormSrgb);
+        let glyph_view = make_viewer_tex(&device, 1, 1, wgpu::TextureFormat::R8Unorm).1;
+        let viewer_bind = make_viewer_bind(&device, &viewer_layout, &viewer_buf, &viewer_img.1, &viewer_sampler, &glyph_view);
+
         let (hdr, depth, bloom) = make_targets(&device, config.width, config.height);
         let ctx = PostCtx { device: &device, layout: &post_layout, sampler: &post_sampler, dummy: &dummy };
         let (bright_pass, down_passes, up_passes, composite_pass) = ctx.build(&hdr, &bloom);
@@ -481,7 +567,52 @@ impl Renderer {
             hud_layout,
             hud_pipe,
             hud: None,
+            viewer_layout,
+            viewer_pipe,
+            viewer_buf,
+            viewer_sampler,
+            viewer_img,
+            glyph_view,
+            viewer_bind,
         }
+    }
+
+    /// The character strip the data-mosaic effect draws with (R8, one row of glyphs).
+    pub fn set_glyph_atlas(&mut self, w: u32, h: u32, px: &[u8]) {
+        let (tex, view, _, _) = make_viewer_tex(&self.device, w, h, wgpu::TextureFormat::R8Unorm);
+        self.queue.write_texture(
+            tex.as_image_copy(),
+            px,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+        self.glyph_view = view;
+        self.rebind_viewer();
+    }
+
+    /// The viewer's picture (RGBA): an image, or the current video frame.
+    pub fn viewer_image(&mut self, w: u32, h: u32, px: &[u8]) {
+        if (self.viewer_img.2, self.viewer_img.3) != (w, h) {
+            self.viewer_img = make_viewer_tex(&self.device, w, h, wgpu::TextureFormat::Rgba8UnormSrgb);
+            self.rebind_viewer();
+        }
+        self.queue.write_texture(
+            self.viewer_img.0.as_image_copy(),
+            px,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
+    }
+
+    fn rebind_viewer(&mut self) {
+        self.viewer_bind = make_viewer_bind(
+            &self.device,
+            &self.viewer_layout,
+            &self.viewer_buf,
+            &self.viewer_img.1,
+            &self.viewer_sampler,
+            &self.glyph_view,
+        );
     }
 
     /// Replaces the HUD overlay image (RGBA8, premultiplied, sRGB, window-sized).
@@ -604,7 +735,15 @@ impl Renderer {
     }
 
     /// Draws a frame. Returns false if the surface needs to be skipped this frame.
-    pub fn render(&mut self, view_proj: Mat4, cam: Vec3, time: f32, city: Option<&City>, hl: Option<Highlight>) {
+    pub fn render(
+        &mut self,
+        view_proj: Mat4,
+        cam: Vec3,
+        time: f32,
+        city: Option<&City>,
+        hl: Option<Highlight>,
+        viewer: Option<ViewerDraw>,
+    ) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
@@ -640,7 +779,7 @@ impl Renderer {
         // Towers back to front (glass needs it), only those with a texture.
         let mut instances: Vec<Instance> = Vec::new();
         if let Some(c) = city {
-            let mut order: Vec<usize> = (0..c.towers.len()).filter(|&i| c.towers[i].layer.is_some()).collect();
+            let mut order: Vec<usize> = (0..c.towers.len()).filter(|&i| c.towers[i].layer.is_some() && c.towers[i].shown > 0.01).collect();
             let dist = |i: usize| (c.towers[i].base + glam::Vec3::Y * c.towers[i].size.y * 0.5).distance_squared(cam);
             order.sort_by(|&a, &b| dist(b).total_cmp(&dist(a)));
             instances = order.iter().map(|&i| instance_of(&c.towers[i])).collect();
@@ -689,6 +828,30 @@ impl Renderer {
             self.post(&mut enc, &self.up_pipe, &self.up_passes[i - 1], &self.bloom[i - 1].view, false);
         }
         self.post(&mut enc, &self.composite_pipe, &self.composite_pass, &out_view, true);
+        if let Some(vd) = viewer {
+            let u = ViewerUniform {
+                rect: vd.rect,
+                screen: [
+                    self.config.width as f32,
+                    self.config.height as f32,
+                    self.viewer_img.2 as f32,
+                    self.viewer_img.3 as f32,
+                ],
+                p: [vd.effect as f32, vd.time, vd.open, 0.0],
+            };
+            self.queue.write_buffer(&self.viewer_buf, 0, bytemuck::bytes_of(&u));
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("viewer"),
+                color_attachments: &[Some(color_att(&out_view, None))],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.viewer_pipe);
+            pass.set_bind_group(0, &self.viewer_bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
         if let Some(hud) = &self.hud {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("hud"),
@@ -723,6 +886,46 @@ impl Renderer {
 }
 
 const FACE_LAYERS_MIN: u32 = 256;
+
+fn make_viewer_tex(
+    device: &wgpu::Device,
+    w: u32,
+    h: u32,
+    format: wgpu::TextureFormat,
+) -> (wgpu::Texture, wgpu::TextureView, u32, u32) {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("viewer"),
+        size: wgpu::Extent3d { width: w.max(1), height: h.max(1), depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = tex.create_view(&Default::default());
+    (tex, view, w, h)
+}
+
+fn make_viewer_bind(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    buf: &wgpu::Buffer,
+    img: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+    glyphs: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("viewer"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry { binding: 0, resource: buf.as_entire_binding() },
+            wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::TextureView(img) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(glyphs) },
+        ],
+    })
+}
 
 fn make_faces(
     device: &wgpu::Device,
@@ -777,9 +980,12 @@ fn instance_of(t: &crate::city::Tower) -> Instance {
     let text = text.map(|c| c * lift);
     let body = body.map(|c| c * (1.0 - 0.6 * t.dim));
     let ease = t.appear * t.appear * (3.0 - 2.0 * t.appear);
+    // Filtered out: sinks into the floor and fades.
+    let shown = t.shown.clamp(0.0, 1.0);
+    let ease = ease * (shown * shown * (3.0 - 2.0 * shown));
     Instance {
         base: t.base.to_array(),
-        size: [t.size.x, t.size.y * (0.35 + 0.65 * ease), t.size.z], // rises as it appears
+        size: [t.size.x, t.size.y * (0.35 + 0.65 * ease) * shown.max(0.02), t.size.z], // rises as it appears
         text_col: [text[0], text[1], text[2], ease],
         body_col: [body[0], body[1], body[2], t.hover],
         misc: [t.layer.unwrap_or(0) as f32, t.seed, 1.0, t.pages.max(1) as f32],
