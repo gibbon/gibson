@@ -71,6 +71,10 @@ Pushing a tag like `v0.1.0` makes GitHub Actions build the Windows `.exe` and
 the universal macOS `.app` and attach them to a release (see
 `.github/workflows/build.yml` and `packaging/macos/make_app.sh`).
 
+## License
+
+MIT (see `LICENSE`). The fonts in `assets/fonts` are under the SIL Open Font License.
+
 ## Credits
 
 - Built with [wgpu](https://wgpu.rs), [winit](https://github.com/rust-windowing/winit),

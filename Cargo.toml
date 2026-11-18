@@ -2,6 +2,8 @@
 name = "gibson"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "A 3D file browser: fly through your folders as a city of glass towers"
 
 [dependencies]
 bytemuck = { version = "1.25.2", features = ["derive"] }
