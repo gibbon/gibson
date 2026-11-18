@@ -95,3 +95,16 @@ Milestone 1 committed (968ee10). Git identity is set globally.
   state. Don't block the UI thread on file I/O.
 - Commit after each working step (end commit messages with the user's usual
   Co-Authored-By line).
+
+## Releases
+- Private repo github.com/gibbon/gibson (MIT). GitHub Actions
+  (.github/workflows/build.yml) builds Gibson-windows.zip (windowed exe with
+  icon) and Gibson-macos.zip (universal, ad-hoc signed .app) on every push;
+  a `v*` tag publishes a Release. v0.1.0 released 2026-11-19.
+- macOS build compiles in CI but has not yet been run on a real Mac: the
+  user will try it and report (Retina, trackpad, Cmd keys, sound, ffmpeg
+  found via /opt/homebrew/bin).
+- Also since milestone 3: colour themes (C: neon, glass, attack, matrix),
+  autofly (P), tower preview effects (T), settings + log in the app's
+  settings folder.
+
