@@ -1014,6 +1014,8 @@ fn instance_of(t: &crate::city::Tower, th: &crate::theme::Theme) -> Instance {
     let lift = (1.0 - 0.8 * t.dim) * (1.0 + 0.6 * t.found);
     let text = text.map(|c| c * lift);
     let body = body.map(|c| c * (1.0 - 0.6 * t.dim));
+    // The hidden garbage file: blood red, whatever the theme.
+    let (text, body) = if t.secret { ([1.0, 0.12, 0.08].map(|c| c * 1.5), [0.16, 0.0, 0.02]) } else { (text, body) };
     let ease = t.appear * t.appear * (3.0 - 2.0 * t.appear);
     // Filtered out: sinks into the floor and fades.
     let shown = t.shown.clamp(0.0, 1.0);

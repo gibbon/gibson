@@ -699,6 +699,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("MOUSE WHEEL", "flying speed"),
         ("P", "fly itself (any key stops)"),
         ("C  /  SHIFT + C", "colour scheme"),
+        ("N", "music on / off (see settings)"),
     ]),
     ("TOWERS", &[
         ("CLICK", "fly to a tower (selects it, amber)"),

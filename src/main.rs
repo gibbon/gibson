@@ -11,6 +11,7 @@ mod city;
 mod files;
 mod filetype;
 mod fs_scan;
+mod garbage;
 mod hud;
 mod meta;
 mod nav;
@@ -106,6 +107,7 @@ struct Running {
     scrub_drag: Option<f32>, // dragging the viewer's timeline: where (0..1)
     view_on_load: Option<PathBuf>, // started with a file: view it once its folder is up
     autofly: Option<autofly::AutoFly>, // flying itself down the streets (P)
+    music: Option<audio::Audio>,       // the soundtrack, playing (N)
     search: Option<String>,  // search box open, with its text
     matches: Vec<f32>,       // per tower: 1 name matches, 0.5 something inside it does
     match_order: Vec<usize>, // matching towers, best and nearest first (Enter walks it)
@@ -253,7 +255,7 @@ impl Running {
             }
         }
         let city = City::build(entries, self.renderer.max_face_layers);
-        self.renderer.reserve_face_layers(city.layers());
+        self.renderer.reserve_face_layers(city.layers() + 4); // +4: room for a hidden tower
         self.pending.clear();
         self.clips.clear();
         self.clip_loading.clear();
@@ -662,6 +664,10 @@ impl Running {
     }
 
     fn reveal(&mut self) {
+        if self.target_path().is_some_and(|p| p == garbage::path()) {
+            self.say("NOT IN ANY DIRECTORY", true);
+            return;
+        }
         match self.target_path() {
             Some(p) => self.report(files::reveal(&p)),
             None => self.say("POINT AT SOMETHING TO SHOW IT IN EXPLORER", false),
@@ -685,6 +691,51 @@ impl Running {
         [KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]
             .iter()
             .any(|k| self.keys.contains(k))
+    }
+
+    /// N: the soundtrack (the `music=` file in settings) on / off. It loops.
+    fn toggle_music(&mut self) {
+        if self.music.take().is_some() {
+            self.say("MUSIC OFF", false);
+            return;
+        }
+        self.start_music();
+    }
+
+    fn start_music(&mut self) {
+        let Some(path) = self.settings.music.clone() else {
+            self.say("NO MUSIC SET: ADD music=<FILE> TO SETTINGS.TXT", false);
+            return;
+        };
+        if !path.is_file() {
+            self.say("MUSIC FILE NOT FOUND", true);
+            return;
+        }
+        if !preview::have_ffmpeg() {
+            self.say("MUSIC NEEDS FFMPEG INSTALLED", true);
+            return;
+        }
+        let v = self.settings.volume as f32 / 100.0;
+        let Some(mut a) = audio::Audio::new(v * v) else {
+            self.say("NO SOUND OUTPUT", true);
+            return;
+        };
+        a.start(&path, 0.0);
+        self.music = Some(a);
+        let name = path.file_stem().map(|n| n.to_string_lossy().to_uppercase()).unwrap_or_default();
+        self.say(&format!("MUSIC: {name}   N STOPS"), false);
+    }
+
+    /// Keeps the soundtrack looping, and hushes it while a video with sound plays.
+    fn tend_music(&mut self) {
+        let video_sound = self.viewer.as_ref().and_then(|v| v.video.as_ref()).is_some_and(|vi| vi.audio.is_some());
+        let path = self.settings.music.clone();
+        if let (Some(m), Some(path)) = (&mut self.music, path) {
+            m.set_paused(video_sound);
+            if m.finished() {
+                m.start(&path, 0.0);
+            }
+        }
     }
 
     /// C / Shift+C / the THEME chip: the next colour scheme.
@@ -753,7 +804,32 @@ impl Running {
         }
     }
 
+    /// Search "garbage": the hidden file's tower rises out of the floor (once per city).
+    fn raise_garbage(&mut self) {
+        let Some(city) = &mut self.city else { return };
+        if city.secret.is_some() || city.towers.is_empty() {
+            return;
+        }
+        let i = city.add_secret(garbage::entry());
+        let t = &city.towers[i];
+        let (entry, seed, max_pages, generation) = (t.entry.clone(), t.seed, t.max_pages, self.generation);
+        let (tx, fonts) = (self.tx.clone(), self.fonts.clone());
+        self.bake_pool.spawn(move || {
+            let pages = textgen::bake(&entry, seed, &fonts, max_pages, None);
+            let _ = tx.send(Msg::Baked { generation, index: i, pages, cached: false, preview: None, duration: 0.0 });
+        });
+        self.say("HIDDEN FILE FOUND", true);
+        if self.music.is_none() && self.settings.music.is_some() {
+            self.start_music();
+            self.say("HIDDEN FILE FOUND", true);
+        }
+        log::info!("the garbage file surfaces");
+    }
+
     fn update_matches(&mut self) {
+        if self.search.as_deref().is_some_and(|q| q.trim().eq_ignore_ascii_case("garbage")) {
+            self.raise_garbage();
+        }
         self.match_next = 0;
         self.match_order.clear();
         let q = self.search.as_deref().unwrap_or("").to_lowercase();
@@ -808,6 +884,11 @@ impl Running {
         self.autofly = None;
         let Some(city) = &self.city else { return };
         let t = &city.towers[i];
+        if t.secret {
+            self.fly_to(i);
+            self.say("THE GARBAGE FILE WON'T OPEN", true);
+            return;
+        }
         if !t.entry.is_dir {
             let path = t.entry.path.clone();
             if t.pv_kind.is_some() {
@@ -922,6 +1003,7 @@ impl Running {
             }
         }
         self.play_videos(time);
+        self.tend_music();
 
         let icon = if self.hot.is_some() || self.hovered.is_some() { CursorIcon::Pointer } else { CursorIcon::Default };
         if icon != self.cursor_icon {
@@ -1163,6 +1245,7 @@ impl ApplicationHandler for App {
             scrub_drag: None,
             view_on_load: None,
             autofly: None,
+            music: None,
             search: None,
             matches: Vec::new(),
             match_order: Vec::new(),
@@ -1251,6 +1334,7 @@ impl ApplicationHandler for App {
                                 KeyCode::KeyR if !event.repeat => s.reveal(),
                                 KeyCode::KeyV if !event.repeat => s.view_target(),
                                 KeyCode::KeyP if !event.repeat => s.toggle_autofly(),
+                                KeyCode::KeyN if !event.repeat => s.toggle_music(),
                                 KeyCode::KeyC if !event.repeat && !s.command_held() => {
                                     let back = s.keys.contains(&KeyCode::ShiftLeft) || s.keys.contains(&KeyCode::ShiftRight);
                                     s.step_theme(if back { -1 } else { 1 });

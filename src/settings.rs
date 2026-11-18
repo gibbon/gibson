@@ -4,17 +4,18 @@
 
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Settings {
     pub tower_fx: usize,  // effect on tower previews
     pub viewer_fx: usize, // effect in the media viewer
     pub volume: u32,      // viewer sound, percent
     pub theme: usize,     // colour scheme
+    pub music: Option<PathBuf>, // soundtrack (N): any audio file of yours
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { tower_fx: 1, viewer_fx: 1, volume: 80, theme: 0 } // hologram, neon
+        Settings { tower_fx: 1, viewer_fx: 1, volume: 80, theme: 0, music: None } // hologram, neon
     }
 }
 
@@ -41,6 +42,11 @@ pub fn load() -> Settings {
     let Some(text) = file().and_then(|f| std::fs::read_to_string(f).ok()) else { return s };
     for line in text.lines() {
         let Some((k, v)) = line.split_once('=') else { continue };
+        if k.trim() == "music" {
+            let v = v.trim();
+            s.music = (!v.is_empty()).then(|| PathBuf::from(v));
+            continue;
+        }
         let Ok(n) = v.trim().parse::<usize>() else { continue };
         match k.trim() {
             "tower_fx" => s.tower_fx = n % crate::viewer::EFFECTS.len(),
@@ -56,8 +62,13 @@ pub fn load() -> Settings {
 pub fn save(s: &Settings) {
     let Some(f) = file() else { return };
     let text = format!(
-        "# Gibson settings\ntower_fx={}\nviewer_fx={}\nvolume={}\ntheme={}\n",
-        s.tower_fx, s.viewer_fx, s.volume, s.theme
+        "# Gibson settings\ntower_fx={}\nviewer_fx={}\nvolume={}\ntheme={}\n\
+         # music: an audio file of yours to play with N (and when hidden things surface)\nmusic={}\n",
+        s.tower_fx,
+        s.viewer_fx,
+        s.volume,
+        s.theme,
+        s.music.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
     );
     let r = f.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&f, text));
     if let Err(e) = r {

@@ -35,6 +35,7 @@ pub struct Tower {
     pub dim: f32,           // eased: searching and this doesn't match
     pub cat: crate::filetype::Cat,
     pub shown: f32,         // eased: 0 = filtered out (sunk into the floor)
+    pub secret: bool,       // the hidden garbage file (easter egg)
     pub page_hits: Vec<Vec<crate::textgen::LineHit>>, // where names sit on each page
     pub pv_kind: Option<crate::preview::PvKind>, // image / video file
     pub pv_layer: Option<u32>,          // reserved preview layer
@@ -74,6 +75,7 @@ pub struct City {
     pub origin: Vec2, // world x,z of cell (0,0) centre
     pub half_extent: Vec2,
     pub cats: Vec<(crate::filetype::Cat, usize)>, // file categories here, with counts
+    pub secret: Option<usize>, // the garbage tower, once it's been found
 }
 
 impl City {
@@ -125,6 +127,7 @@ impl City {
                     dim: 0.0,
                     cat,
                     shown: 1.0,
+                    secret: false,
                     page_hits: Vec::new(),
                     pv_kind,
                     pv_layer: None,
@@ -173,12 +176,52 @@ impl City {
 
         City {
             cats,
+            secret: None,
             towers,
             cols,
             rows,
             origin,
             half_extent: Vec2::new(cols as f32 * CELL / 2.0, rows as f32 * CELL / 2.0),
         }
+    }
+
+    /// Raises the hidden garbage tower in an empty spot (an unused grid cell, or just
+    /// past the last one). Returns its index; its pages go after everyone else's.
+    pub fn add_secret(&mut self, entry: Entry) -> usize {
+        let n = self.towers.len();
+        let cell = if n < self.cols * self.rows { n } else { self.cols * self.rows + self.cols / 2 };
+        let (col, row) = (cell % self.cols, cell / self.cols);
+        let first_layer = self.layers();
+        let size = Vec3::new(7.0, 44.0, 7.0);
+        self.towers.push(Tower {
+            kind: Kind::Other,
+            cat: crate::filetype::Cat::Other,
+            entry,
+            base: Vec3::new(self.origin.x + col as f32 * CELL, 0.0, self.origin.y + row as f32 * CELL),
+            size,
+            seed: 66.6,
+            first_layer,
+            max_pages: 4,
+            pages: 0,
+            layer: None,
+            appear: 0.0,
+            hover: 0.0,
+            select: 0.0,
+            found: 0.0,
+            dim: 0.0,
+            shown: 1.0,
+            secret: true,
+            page_hits: Vec::new(),
+            pv_kind: None,
+            pv_layer: None,
+            pv_size: None,
+            pv_video: false,
+            pv_duration: 0.0,
+            pv_cut: 0.0,
+            pv_still: None,
+        });
+        self.secret = Some(n);
+        n
     }
 
     /// Closest tower hit by a ray, and the point where the ray meets it.

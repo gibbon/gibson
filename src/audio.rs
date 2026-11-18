@@ -26,6 +26,7 @@ pub struct Audio {
     shared: Arc<Shared>,
     rate: u32,
     feeder: Option<(Arc<AtomicBool>, Child)>,
+    decoded_all: Arc<AtomicBool>, // the decoder reached the end of the file
 }
 
 impl Drop for Audio {
@@ -72,7 +73,7 @@ impl Audio {
         }?;
         stream.play().map_err(|e| log::warn!("audio: {e}")).ok()?;
         log::info!("audio: {} Hz, {} channels", config.sample_rate, config.channels);
-        Some(Audio { _stream: stream, shared, rate: config.sample_rate, feeder: None })
+        Some(Audio { _stream: stream, shared, rate: config.sample_rate, feeder: None, decoded_all: Arc::new(AtomicBool::new(false)) })
     }
 
     /// Plays `path`'s sound from `at` seconds (replacing whatever was playing).
@@ -90,7 +91,8 @@ impl Audio {
         let Ok(mut child) = child else { return };
         let Some(mut out) = child.stdout.take() else { return };
         let stop = Arc::new(AtomicBool::new(false));
-        let (shared, stop2) = (self.shared.clone(), stop.clone());
+        self.decoded_all = Arc::new(AtomicBool::new(false));
+        let (shared, stop2, done) = (self.shared.clone(), stop.clone(), self.decoded_all.clone());
         let limit = (self.rate as f32 * 2.0 * AHEAD_SECS) as usize;
         std::thread::spawn(move || {
             let mut buf = vec![0u8; 16 * 1024];
@@ -102,7 +104,10 @@ impl Audio {
                     continue;
                 }
                 let n = match out.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) | Err(_) => {
+                        done.store(true, Ordering::Relaxed);
+                        break;
+                    }
                     Ok(n) => n,
                 };
                 carry.extend_from_slice(&buf[..n]);
@@ -122,6 +127,11 @@ impl Audio {
             let _ = child.kill();
             let _ = child.wait();
         }
+    }
+
+    /// Played to the very end (decoded everything, and the speakers have had it all).
+    pub fn finished(&self) -> bool {
+        self.decoded_all.load(Ordering::Relaxed) && self.shared.queue.lock().unwrap().is_empty()
     }
 
     /// Seconds of sound played since the last `start`.
