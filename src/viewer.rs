@@ -1,6 +1,7 @@
 // The media viewer: an image or video full-screen over the city, with switchable
-// effects. Images are decoded at full size; videos stream through FFmpeg (no sound)
-// at the size they'll be shown, and seeking restarts the stream at the new time.
+// effects. Images are decoded at full size; videos stream through FFmpeg at the size
+// they'll be shown, with their sound (audio.rs) as the clock; seeking restarts both
+// streams at the new time.
 
 use crate::preview::PvKind;
 use std::io::Read;
@@ -30,6 +31,8 @@ pub struct Viewer {
     pub frame: Option<Frame>, // newest picture, waiting for upload
     pub size: Option<(u32, u32)>, // size of what's on screen
     pub error: Option<String>,
+    pub volume: f32, // 0..1
+    pub muted: bool,
 }
 
 pub struct Video {
@@ -43,6 +46,7 @@ pub struct Video {
     child: Option<Child>,
     rx: Option<Receiver<Vec<u8>>>,
     shown: u64, // frames taken from the current stream
+    pub audio: Option<crate::audio::Audio>, // the sound, if it has any: the clock
 }
 
 impl Drop for Video {
@@ -53,7 +57,10 @@ impl Drop for Video {
 
 impl Video {
     pub fn time(&self) -> f32 {
-        let t = self.seek + self.played + if self.paused { 0.0 } else { self.since.elapsed().as_secs_f32() };
+        let t = match &self.audio {
+            Some(a) => self.seek + a.clock(), // follow the sound
+            None => self.seek + self.played + if self.paused { 0.0 } else { self.since.elapsed().as_secs_f32() },
+        };
         if self.duration > 0.0 { t.min(self.duration) } else { t }
     }
 
@@ -91,6 +98,10 @@ impl Video {
         });
         self.child = Some(child);
         self.rx = Some(rx);
+        if let Some(a) = &mut self.audio {
+            a.start(path, self.seek);
+            a.set_paused(self.paused);
+        }
     }
 }
 
@@ -121,7 +132,7 @@ fn probe(p: &Path) -> Option<(u32, u32, f32)> {
 }
 
 impl Viewer {
-    pub fn open(items: Vec<PathBuf>, index: usize, effect: usize, screen: (u32, u32)) -> Viewer {
+    pub fn open(items: Vec<PathBuf>, index: usize, effect: usize, screen: (u32, u32), volume: f32) -> Viewer {
         let mut v = Viewer {
             items,
             index,
@@ -132,6 +143,8 @@ impl Viewer {
             frame: None,
             size: None,
             error: None,
+            volume,
+            muted: false,
         };
         v.load(screen);
         v
@@ -177,6 +190,7 @@ impl Viewer {
                     child: None,
                     rx: None,
                     shown: 0,
+                    audio: if crate::audio::has_audio(&path) { crate::audio::Audio::new(self.gain()) } else { None },
                 };
                 let start = if duration > 60.0 { duration * 0.1 } else { 0.0 };
                 v.start(&path, start);
@@ -244,7 +258,31 @@ impl Viewer {
                 v.played += v.since.elapsed().as_secs_f32();
             }
             v.paused = !v.paused;
+            if let Some(a) = &v.audio {
+                a.set_paused(v.paused);
+            }
         }
+    }
+
+    fn gain(&self) -> f32 {
+        if self.muted { 0.0 } else { self.volume * self.volume } // a gentler curve than linear
+    }
+
+    fn apply_gain(&self) {
+        if let Some(a) = self.video.as_ref().and_then(|v| v.audio.as_ref()) {
+            a.set_gain(self.gain());
+        }
+    }
+
+    pub fn toggle_mute(&mut self) {
+        self.muted = !self.muted;
+        self.apply_gain();
+    }
+
+    pub fn change_volume(&mut self, by: f32) {
+        self.volume = (self.volume + by).clamp(0.0, 1.0);
+        self.muted = false;
+        self.apply_gain();
     }
 
     pub fn seek(&mut self, to: f32) {
@@ -264,6 +302,9 @@ impl Viewer {
                     }
                 }
                 v.paused = true;
+            }
+            if let Some(a) = &v.audio {
+                a.set_paused(v.paused);
             }
         }
     }

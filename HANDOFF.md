@@ -51,8 +51,9 @@ banking flights down lanes.
    desktop: post keys/clicks to the Gibson HWND only (PostMessage WM_KEYDOWN /
    WM_MOUSEMOVE+WM_LBUTTONDOWN), and `gibson <file>` opens the viewer on it.
    Also done: ? / F1 help panel; file-type filter strip; search FILTER (Tab)
-   hides non-matches live; media viewer (no sound yet — the user wants sound
-   as a later step): images full size, videos streamed via ffmpeg with
+   hides non-matches live; media viewer with sound (cpal + an ffmpeg audio
+   stream; the played-sample count is the clock the video follows; M mute,
+   +/- volume; tower previews stay silent): images full size, videos streamed via ffmpeg with
    timeline scrubbing, 6 effects (clean, hologram, CRT, thermal, data
    mosaic, edge glow), [ ] steps through the folder's media.
 4. **Alive** — live updates (notify crate), autopilot flythrough/screensaver,

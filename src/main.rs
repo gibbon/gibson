@@ -1,6 +1,7 @@
 // Gibson — fly through your file system as a city of glass towers.
 
 mod cache;
+mod audio;
 mod camera;
 mod city;
 mod files;
@@ -499,7 +500,8 @@ impl Running {
         self.search = None;
         self.help = false;
         self.camera.autopilot = None;
-        self.viewer = Some(viewer::Viewer::open(items, at, self.effect, self.renderer.size()));
+        let volume = self.settings.volume as f32 / 100.0;
+        self.viewer = Some(viewer::Viewer::open(items, at, self.effect, self.renderer.size(), volume));
     }
 
     /// Opens the viewer on tower `i`, stepping through the city's pictures and videos.
@@ -585,6 +587,19 @@ impl Running {
                     _ => 5,
                 };
                 self.set_effect(d);
+            }
+            KeyCode::KeyM if !ev.repeat => {
+                if let Some(v) = &mut self.viewer {
+                    v.toggle_mute();
+                }
+            }
+            KeyCode::Equal | KeyCode::NumpadAdd | KeyCode::Minus | KeyCode::NumpadSubtract => {
+                let up = matches!(code, KeyCode::Equal | KeyCode::NumpadAdd);
+                if let Some(v) = &mut self.viewer {
+                    v.change_volume(if up { 0.1 } else { -0.1 });
+                    self.settings.volume = (v.volume * 100.0).round() as u32;
+                    settings::save(&self.settings);
+                }
             }
             KeyCode::KeyO if !ev.repeat => {
                 if let Some(v) = &self.viewer {
@@ -949,6 +964,11 @@ impl Running {
                     };
                     (t, vi.duration, vi.paused)
                 }),
+                sound: v
+                    .video
+                    .as_ref()
+                    .filter(|vi| vi.audio.is_some())
+                    .map(|_| ((v.volume * 100.0).round() as u32, v.muted)),
                 error: v.error.clone(),
             }),
             hover,

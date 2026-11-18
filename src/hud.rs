@@ -52,6 +52,7 @@ pub struct ViewerHud {
     pub size: Option<(u32, u32)>,
     pub effect: usize,
     pub video: Option<(f32, f32, bool)>, // time, duration, paused
+    pub sound: Option<(u32, bool)>,      // volume percent, muted (None: no sound track)
     pub error: Option<String>,
 }
 
@@ -503,7 +504,25 @@ impl Hud {
             self.text(&fonts.mono, mono, (pb.x + pb.w + u(12.0)) as f32, (y + u(5.0)) as f32, &now, CYAN, 1.0);
             self.text(&fonts.mono, mono, (x1 + u(14.0)) as f32, (y + u(5.0)) as f32, &total, DIM, 1.0);
             self.scrub = Some(Rect { y: bar.y - u(12.0), h: bar.h + u(24.0), ..bar });
-            hint = "SPACE pause   LEFT / RIGHT 5 s (SHIFT 30 s)   CLICK / DRAG timeline   [ ] previous / next   E effect   O open in app   ESC close";
+            // Sound: volume bars (or MUTED / NO SOUND) above the timeline's right end.
+            let label = match v.sound {
+                Some((_, true)) => "MUTED  M".to_string(),
+                Some((vol, false)) => format!("VOL {vol}%  M  + -"),
+                None => "NO SOUND".to_string(),
+            };
+            let lw = text_width(&fonts.mono, small, &label);
+            let lx = (w - u(28.0)) as f32 - lw;
+            let col = if matches!(v.sound, Some((_, true)) | None) { DIM } else { CYAN };
+            self.text(&fonts.mono, small, lx, (y - u(26.0)) as f32, &label, col, 1.0);
+            if let Some((vol, false)) = v.sound {
+                for k in 0..10 {
+                    let on = (k as u32) < (vol + 5) / 10;
+                    let bh = u(3.0) + k * u(1.0);
+                    let r = Rect { x: lx as i32 - u(84.0) + k * u(7.0), y: y - u(26.0) - bh, w: u(5.0), h: bh };
+                    self.fill(r, CYAN, if on { 0.95 } else { 0.25 });
+                }
+            }
+            hint = "SPACE pause   LEFT / RIGHT 5 s (SHIFT 30 s)   DRAG timeline   M mute   + - volume   [ ] previous / next   E effect   O open in app   ESC close";
         } else {
             hint = "[ ] previous / next   E effect   1-6 pick an effect   O open in app   ESC close";
         }
@@ -671,6 +690,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("E  /  1-6", "change the effect"),
         ("T  /  SHIFT + T", "effect on the towers' previews"),
         ("[  ]", "previous / next in the folder"),
+        ("M  /  +  -", "mute, volume"),
     ]),
     ("HELP", &[("?  /  F1", "show or hide this")]),
 ];
