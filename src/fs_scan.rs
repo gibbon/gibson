@@ -42,12 +42,17 @@ const TEXT_EXT: &[&str] = &[
     "ps1", "bat", "cmd", "sql", "csproj", "sln", "lock",
 ];
 
-pub fn scan(dir: &Path) -> Vec<Entry> {
+/// Reads a folder for the city. Errors (no access, gone) come back as a short message.
+pub fn scan(dir: &Path) -> Result<Vec<Entry>, String> {
     let rd = match fs::read_dir(dir) {
         Ok(rd) => rd,
         Err(e) => {
             log::warn!("scan {}: {e}", dir.display());
-            return Vec::new();
+            return Err(match e.kind() {
+                std::io::ErrorKind::PermissionDenied => "ACCESS DENIED".into(),
+                std::io::ErrorKind::NotFound => "FOLDER NOT FOUND".into(),
+                _ => e.to_string().to_uppercase(),
+            });
         }
     };
     let mut dirs = Vec::new();
@@ -73,7 +78,19 @@ pub fn scan(dir: &Path) -> Vec<Entry> {
         out.push(read_file_entry(&p, len));
     }
     log::info!("scanned {}: {} entries", dir.display(), out.len());
-    out
+    Ok(out)
+}
+
+/// Drive roots to offer in the HUD (Windows: every lettered drive that answers).
+pub fn drives() -> Vec<PathBuf> {
+    if cfg!(windows) {
+        (b'C'..=b'Z')
+            .map(|c| PathBuf::from(format!("{}:\\", c as char)))
+            .filter(|p| fs::metadata(p).is_ok())
+            .collect()
+    } else {
+        vec![PathBuf::from("/")]
+    }
 }
 
 fn name_of(p: &Path) -> String {

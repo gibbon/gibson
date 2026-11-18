@@ -30,6 +30,8 @@ pub struct Tower {
     pub layer: Option<u32>, // = Some(first_layer) once baked + uploaded
     pub appear: f32,        // 0 → 1 fade-in after the texture arrives
     pub hover: f32,         // eased highlight
+    pub select: f32,        // eased "selected" tint
+    pub page_hits: Vec<Vec<crate::textgen::LineHit>>, // where names sit on each page
 }
 
 impl Tower {
@@ -104,6 +106,8 @@ impl City {
                     layer: None,
                     appear: 0.0,
                     hover: 0.0,
+                    select: 0.0,
+                    page_hits: Vec::new(),
                 }
             })
             .collect();
@@ -133,8 +137,8 @@ impl City {
         }
     }
 
-    /// Closest tower hit by a ray.
-    pub fn pick(&self, o: Vec3, d: Vec3) -> Option<usize> {
+    /// Closest tower hit by a ray, and the point where the ray meets it.
+    pub fn pick(&self, o: Vec3, d: Vec3) -> Option<(usize, Vec3)> {
         let mut best = None;
         let mut best_t = f32::MAX;
         for (i, t) in self.towers.iter().enumerate() {
@@ -145,7 +149,7 @@ impl City {
                 }
             }
         }
-        best
+        best.map(|i| (i, o + d * best_t))
     }
 }
 

@@ -7,6 +7,8 @@ struct Globals {
     city: vec4<f32>,    // origin x, origin z, cell size, city radius
     haze: vec4<f32>,    // rgb haze colour
     screen: vec4<f32>,  // w, h, 1/w, 1/h
+    hl: vec4<f32>,      // hovered name: texture layer, on (1/0), -, -
+    hl_rect: vec4<f32>, // its box on the page: u0, v0, u1, v1
 };
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var faces: texture_2d_array<f32>;
@@ -80,8 +82,13 @@ fn fs(i: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     let page = select((around * per_face + tile) % pages, 0.0, top);
     // Gradients from the continuous coordinate, so mips don't seam at page edges.
     let cont = vec2<f32>(i.fuv.x / fw, tv);
-    let text = textureSampleGrad(faces, samp, vec2<f32>(cont.x, tv - tile), i32(i.misc.x + page),
-                                 dpdx(cont), dpdy(cont)).r * i.misc.z;
+    let puv = vec2<f32>(cont.x, tv - tile);
+    let text = textureSampleGrad(faces, samp, puv, i32(i.misc.x + page), dpdx(cont), dpdy(cont)).r * i.misc.z;
+
+    // The name under the mouse: an amber bar behind it, its letters lit up.
+    let r = g.hl_rect;
+    let in_box = step(r.x, puv.x) * step(puv.x, r.z) * step(r.y, puv.y) * step(puv.y, r.w);
+    let hl = in_box * g.hl.y * select(0.0, 1.0, abs(i.misc.x + page - g.hl.x) < 0.5 && !top);
 
     // Edges: a crisp line plus a soft glow, the brightest thing on the glass.
     let d = min(min(i.fuv.x, fw - i.fuv.x), min(i.fuv.y, fh - i.fuv.y));
@@ -100,6 +107,7 @@ fn fs(i: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
 
     var emissive = tcol * (text * 1.05 * face_k * (1.0 + sweep) + edge * (0.7 + hover) + base_glow * 0.6);
     emissive += vec3<f32>(0.75, 0.38, 1.0) * text * hover * 1.2 * face_k;   // hovered: magenta lift
+    emissive = mix(emissive, vec3<f32>(1.0, 0.7, 0.26) * (0.3 + text * 2.4) * face_k, hl);
 
     var alpha = select(0.25, 0.5, front); // darker glass in front = more contrast
     var body = i.body_col.rgb * (1.0 + hover * 0.8);

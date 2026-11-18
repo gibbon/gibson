@@ -23,6 +23,14 @@ pub struct Camera {
     pub vel: Vec3,
     pub speed: f32, // base units / second (wheel adjusts)
     pub fov_y: f32,
+    pub autopilot: Option<Autopilot>,
+}
+
+/// A flight to a viewpoint: where to be, and what to look at on arrival.
+#[derive(Clone, Copy, Debug)]
+pub struct Autopilot {
+    pub eye: Vec3,
+    pub look: Vec3,
 }
 
 #[derive(Default)]
@@ -51,7 +59,22 @@ impl Camera {
             vel: Vec3::ZERO,
             speed: 30.0,
             fov_y: 60f32.to_radians(),
+            autopilot: None,
         }
+    }
+
+    /// Starts a smooth flight; any manual input takes over again.
+    pub fn fly_to(&mut self, eye: Vec3, look: Vec3) {
+        self.autopilot = Some(Autopilot { eye, look });
+    }
+
+    /// Jumps straight to a viewpoint (used when a new folder loads).
+    pub fn place(&mut self, eye: Vec3, look: Vec3) {
+        self.pos = eye;
+        self.vel = Vec3::ZERO;
+        self.autopilot = None;
+        let (yaw, pitch) = yaw_pitch(look - eye);
+        (self.yaw, self.pitch, self.target_yaw, self.target_pitch, self.roll) = (yaw, pitch, yaw, pitch, 0.0);
     }
 
     pub fn forward(&self) -> Vec3 {
@@ -60,6 +83,17 @@ impl Camera {
 
     pub fn update(&mut self, input: &FlyInput, dt: f32) {
         let dt = dt.min(0.1); // don't jump after a stall
+        let manual = input.forward != 0.0 || input.right != 0.0 || input.up != 0.0 || input.look_dx != 0.0 || input.look_dy != 0.0;
+        if manual {
+            self.autopilot = None;
+        }
+        if let Some(ap) = self.autopilot {
+            // Turn towards the target (the shortest way round), and head for the eye point.
+            let (yaw, pitch) = yaw_pitch(ap.look - self.pos.lerp(ap.eye, 0.5));
+            let tau = std::f32::consts::TAU;
+            self.target_yaw = yaw + ((self.target_yaw - yaw) / tau).round() * tau;
+            self.target_pitch = pitch;
+        }
 
         // Mouse moves a target; the view eases towards it.
         self.target_yaw += input.look_dx * LOOK_SENS;
@@ -75,8 +109,18 @@ impl Camera {
         let right = fwd.cross(Vec3::Y).normalize_or_zero();
         let speed = self.speed * if input.boost { 4.0 } else { 1.0 };
         let wish = fwd * input.forward + right * input.right + Vec3::Y * input.up;
-        let target = wish * speed;
-        let rate = if wish.length_squared() > 0.0 { ACCEL } else { GLIDE };
+        let mut target = wish * speed;
+        let mut rate = if wish.length_squared() > 0.0 { ACCEL } else { GLIDE };
+        if let Some(ap) = self.autopilot {
+            // Ease in: fast across the city, slowing as it arrives.
+            let to = ap.eye - self.pos;
+            let max = self.speed.max(30.0) * 3.0;
+            target = (to * 1.6).clamp_length_max(max);
+            rate = ACCEL;
+            if to.length() < 0.25 && self.vel.length() < 0.5 {
+                self.autopilot = None;
+            }
+        }
         self.vel += (target - self.vel) * ease(rate, dt);
         self.pos += self.vel * dt;
         if self.pos.y < 0.6 {
@@ -110,4 +154,10 @@ impl Camera {
         let b = inv.project_point3(ndc.extend(1.0));
         (self.pos, (b - a).normalize())
     }
+}
+
+/// Yaw/pitch (in this camera's convention) that face along `d`.
+fn yaw_pitch(d: Vec3) -> (f32, f32) {
+    let d = d.normalize_or(Vec3::NEG_Z);
+    (d.x.atan2(-d.z), d.y.clamp(-1.0, 1.0).asin().clamp(-1.5, 1.5))
 }

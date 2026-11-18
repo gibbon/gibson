@@ -23,6 +23,16 @@ pub struct Globals {
     city: [f32; 4],
     haze: [f32; 4],
     screen: [f32; 4],
+    hl: [f32; 4],
+    hl_rect: [f32; 4],
+}
+
+/// A name on a tower face to light up: the texture layer of its page, and its box
+/// on that page in 0..1 page coordinates.
+#[derive(Clone, Copy)]
+pub struct Highlight {
+    pub layer: u32,
+    pub rect: [f32; 4],
 }
 
 #[repr(C)]
@@ -94,6 +104,17 @@ pub struct Renderer {
     down_passes: Vec<PostPass>,
     up_passes: Vec<PostPass>,
     composite_pass: PostPass,
+
+    hud_layout: wgpu::BindGroupLayout,
+    hud_pipe: wgpu::RenderPipeline,
+    hud: Option<HudTex>,
+}
+
+struct HudTex {
+    tex: wgpu::Texture,
+    bind: wgpu::BindGroup,
+    w: u32,
+    h: u32,
 }
 
 impl Renderer {
@@ -350,6 +371,55 @@ impl Renderer {
             })
             .create_view(&Default::default());
 
+        // ── HUD overlay (premultiplied alpha over the final image) ───────────
+        let hud_mod = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("hud"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/hud.wgsl").into()),
+        });
+        let hud_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("hud"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
+        let hud_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("hud"),
+            bind_group_layouts: &[Some(&hud_layout)],
+            immediate_size: 0,
+        });
+        let hud_pipe = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("hud"),
+            layout: Some(&hud_pl),
+            vertex: wgpu::VertexState {
+                module: &hud_mod,
+                entry_point: Some("vs"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &hud_mod,
+                entry_point: Some("fs"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: Default::default(),
+            multiview_mask: None,
+            cache: None,
+        });
+
         let (hdr, depth, bloom) = make_targets(&device, config.width, config.height);
         let ctx = PostCtx { device: &device, layout: &post_layout, sampler: &post_sampler, dummy: &dummy };
         let (bright_pass, down_passes, up_passes, composite_pass) = ctx.build(&hdr, &bloom);
@@ -385,7 +455,48 @@ impl Renderer {
             down_passes,
             up_passes,
             composite_pass,
+            hud_layout,
+            hud_pipe,
+            hud: None,
         }
+    }
+
+    /// Replaces the HUD overlay image (RGBA8, premultiplied, sRGB, window-sized).
+    pub fn upload_hud(&mut self, w: u32, h: u32, rgba: &[u8]) {
+        if w == 0 || h == 0 {
+            return;
+        }
+        if self.hud.as_ref().map(|t| (t.w, t.h)) != Some((w, h)) {
+            let tex = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("hud"),
+                size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8UnormSrgb,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&Default::default());
+            let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("hud"),
+                layout: &self.hud_layout,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }],
+            });
+            self.hud = Some(HudTex { tex, bind, w, h });
+        }
+        let t = self.hud.as_ref().unwrap();
+        self.queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &t.tex,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            rgba,
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w * 4), rows_per_image: Some(h) },
+            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        );
     }
 
     pub fn size(&self) -> (u32, u32) {
@@ -452,7 +563,7 @@ impl Renderer {
     }
 
     /// Draws a frame. Returns false if the surface needs to be skipped this frame.
-    pub fn render(&mut self, view_proj: Mat4, cam: Vec3, time: f32, city: Option<&City>) {
+    pub fn render(&mut self, view_proj: Mat4, cam: Vec3, time: f32, city: Option<&City>, hl: Option<Highlight>) {
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
             wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
@@ -473,6 +584,8 @@ impl Renderer {
             city: [origin.x, origin.y, crate::city::CELL, radius],
             haze: [0.06, 0.19, 0.63, 0.0],
             screen: [self.config.width as f32, self.config.height as f32, 0.0, 0.0],
+            hl: [hl.map_or(0.0, |h| h.layer as f32), hl.map_or(0.0, |_| 1.0), 0.0, 0.0],
+            hl_rect: hl.map_or([0.0; 4], |h| h.rect),
         };
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
         self.queue.write_buffer(
@@ -484,10 +597,9 @@ impl Renderer {
         );
 
         // Towers back to front (glass needs it), only those with a texture.
-        let mut order: Vec<usize> = Vec::new();
         let mut instances: Vec<Instance> = Vec::new();
         if let Some(c) = city {
-            order = (0..c.towers.len()).filter(|&i| c.towers[i].layer.is_some()).collect();
+            let mut order: Vec<usize> = (0..c.towers.len()).filter(|&i| c.towers[i].layer.is_some()).collect();
             let dist = |i: usize| (c.towers[i].base + glam::Vec3::Y * c.towers[i].size.y * 0.5).distance_squared(cam);
             order.sort_by(|&a, &b| dist(b).total_cmp(&dist(a)));
             instances = order.iter().map(|&i| instance_of(&c.towers[i])).collect();
@@ -536,6 +648,19 @@ impl Renderer {
             self.post(&mut enc, &self.up_pipe, &self.up_passes[i - 1], &self.bloom[i - 1].view, false);
         }
         self.post(&mut enc, &self.composite_pipe, &self.composite_pass, &out_view, true);
+        if let Some(hud) = &self.hud {
+            let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("hud"),
+                color_attachments: &[Some(color_att(&out_view, None))],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.hud_pipe);
+            pass.set_bind_group(0, &hud.bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
 
         self.queue.submit(Some(enc.finish()));
         self.queue.present(frame);
@@ -598,6 +723,11 @@ fn instance_of(t: &crate::city::Tower) -> Instance {
         Kind::Binary => ([1.0, 0.55, 0.22], [0.30, 0.10, 0.04]),
         Kind::Other => ([0.55, 0.62, 1.0], [0.08, 0.10, 0.35]),
     };
+    // Selected tower: text and glass shift to amber.
+    let k = t.select.clamp(0.0, 1.0);
+    let mix = |a: [f32; 3], b: [f32; 3], k: f32| [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+    let text = mix(text, [1.0, 0.68, 0.24], k * 0.85);
+    let body = mix(body, [0.32, 0.17, 0.03], k * 0.8);
     let ease = t.appear * t.appear * (3.0 - 2.0 * t.appear);
     Instance {
         base: t.base.to_array(),

@@ -11,8 +11,8 @@ pub const TEX_H: u32 = 1024;
 pub const MIP_LEVELS: u32 = 11; // 512x1024 → 1x1 (height drives the count)
 
 pub struct Fonts {
-    wide: Font, // Michroma — big wide headings, like the film's directory names
-    mono: Font, // Share Tech Mono — data text
+    pub wide: Font, // Michroma — big wide headings, like the film's directory names
+    pub mono: Font, // Share Tech Mono — data text
 }
 
 impl Fonts {
@@ -109,6 +109,25 @@ fn text_width(font: &Font, px: f32, text: &str) -> f32 {
     text.chars().map(|c| font.metrics(c, px).advance_width).sum()
 }
 
+thread_local! {
+    // Rasterised glyphs, per thread: (font, char, size) → bitmap. Pages and the HUD
+    // draw the same few hundred glyphs over and over.
+    static GLYPHS: std::cell::RefCell<std::collections::HashMap<(usize, char, u32), std::rc::Rc<(fontdue::Metrics, Vec<u8>)>>> =
+        Default::default();
+}
+
+/// A glyph's metrics and coverage bitmap, rasterised once per thread.
+pub fn glyph(font: &Font, ch: char, px: f32) -> std::rc::Rc<(fontdue::Metrics, Vec<u8>)> {
+    let key = (font as *const Font as usize, ch, px.to_bits());
+    GLYPHS.with(|g| {
+        let mut g = g.borrow_mut();
+        if g.len() > 20_000 {
+            g.clear();
+        }
+        g.entry(key).or_insert_with(|| std::rc::Rc::new(font.rasterize(ch, px))).clone()
+    })
+}
+
 /// Draws `text` with its baseline at `y`; returns the end x.
 fn draw_text(c: &mut Canvas, font: &Font, px: f32, x: f32, y: f32, text: &str, v: u8, clip: Rect, invert: bool) -> f32 {
     let mut pen = x;
@@ -116,7 +135,8 @@ fn draw_text(c: &mut Canvas, font: &Font, px: f32, x: f32, y: f32, text: &str, v
         if pen > (clip.x + clip.w) as f32 {
             break;
         }
-        let (m, bmp) = font.rasterize(ch, px);
+        let gl = glyph(font, ch, px);
+        let (m, bmp) = (&gl.0, &gl.1);
         let gx = pen as i32 + m.xmin;
         let gy = y as i32 - m.height as i32 - m.ymin;
         for row in 0..m.height {
@@ -144,11 +164,28 @@ fn fit(font: &Font, px: f32, text: &str, max_w: f32) -> String {
     s.into_iter().collect::<String>() + "…"
 }
 
+/// Where a listed name / line sits on a page (texture pixels), for clicking names.
+#[derive(Clone, Copy, Debug)]
+pub struct LineHit {
+    pub x: i16,
+    pub y: i16,
+    pub w: i16,
+    pub h: i16,
+    pub line: u32, // index into the entry's `lines`
+}
+
+/// One baked face page: its mip chain, and where its names are.
+pub struct Page {
+    pub mips: Vec<u8>,
+    pub hits: Vec<LineHit>,
+}
+
 /// Where we are in the entry's real content; carries on from page to page.
 struct Walk {
     line: usize, // next name / text line
     hex: usize,  // next byte offset for hex dumps
     wrap: bool,  // single-page tower: loop the content to fill the page
+    hits: Vec<LineHit>, // names drawn on the current page
 }
 
 impl Walk {
@@ -162,13 +199,16 @@ impl Walk {
     fn done(&self, e: &Entry) -> bool {
         if !e.lines.is_empty() { !self.lines_left(e) } else { !self.hex_left(e) }
     }
+    fn hit(&mut self, x: i32, y: i32, w: i32, h: i32, line: usize) {
+        self.hits.push(LineHit { x: x as i16, y: y as i16, w: w as i16, h: h as i16, line: line as u32 });
+    }
 }
 
 /// Bakes up to `max_pages` face pages (each a full mip chain). Page 0 is the tower's
 /// front page; later pages continue through the content where the last one stopped.
-pub fn bake(e: &Entry, seed: f32, fonts: &Fonts, max_pages: u32) -> Vec<Vec<u8>> {
+pub fn bake(e: &Entry, seed: f32, fonts: &Fonts, max_pages: u32) -> Vec<Page> {
     let mut rng = Rng(seed.to_bits() as u64 * 0x2545_F491_4F6C_DD1D + 7);
-    let mut walk = Walk { line: 0, hex: 0, wrap: max_pages <= 1 };
+    let mut walk = Walk { line: 0, hex: 0, wrap: max_pages <= 1, hits: Vec::new() };
     let mut pages = Vec::new();
     for p in 0..max_pages.max(1) {
         let mut c = Canvas::new();
@@ -177,7 +217,7 @@ pub fn bake(e: &Entry, seed: f32, fonts: &Fonts, max_pages: u32) -> Vec<Vec<u8>>
         } else {
             next_page(&mut c, e, &mut rng, &mut walk, fonts);
         }
-        pages.push(mip_chain(&c.px));
+        pages.push(Page { mips: mip_chain(&c.px), hits: std::mem::take(&mut walk.hits) });
         if walk.done(e) {
             break;
         }
@@ -217,7 +257,8 @@ fn front_page(c: &mut Canvas, e: &Entry, rng: &mut Rng, walk: &mut Walk, fonts: 
     if e.is_dir && !e.lines.is_empty() {
         let list = Rect { x: m, y, w: TEX_W as i32 - 2 * m, h: 300 };
         let mut ly = y as f32 + 22.0;
-        for (text, is_dir) in e.lines.iter().take(12) {
+        for (i, (text, is_dir)) in e.lines.iter().take(12).enumerate() {
+            walk.hit(list.x, ly as i32 - 18, list.w, 24, i);
             let t = fit(&fonts.wide, 15.0, &text.to_uppercase(), (list.w - 40) as f32);
             let w = text_width(&fonts.wide, 15.0, &t);
             let right = (list.x + list.w - 22) as f32;
@@ -405,7 +446,9 @@ fn mosaic_block(c: &mut Canvas, b: Rect, e: &Entry, rng: &mut Rng, walk: &mut Wa
                 if walk.line >= e.lines.len() && !walk.wrap {
                     break;
                 }
-                let (t, is_dir) = &e.lines[walk.line % e.lines.len()];
+                let idx = walk.line % e.lines.len();
+                walk.hit(inner.x, (y - px) as i32, inner.w, line_h.ceil() as i32, idx);
+                let (t, is_dir) = &e.lines[idx];
                 walk.line += 1;
                 let t = if *is_dir { t.to_uppercase() + " >" } else { t.clone() };
                 let v = if *is_dir { level } else { level.saturating_sub(40) };
