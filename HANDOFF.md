@@ -34,10 +34,14 @@ banking flights down lanes.
    faces, circuit floor, bloom, free fly (WASD/QE/Space, Shift boost, drag to
    look, wheel = speed). ✅ **done, confirmed by user 2026-11-18** (camera has
    eased look, ~1.5 s glide, banking into turns; tuning consts top of camera.rs)
-2. **Navigation** ← **next** — click a tower to fly to it, fly into a folder to enter it,
+2. **Navigation** ✅ **done, confirmed 2026-11-18** — click a tower to fly to it, fly into a folder to enter it,
    Backspace to go up, drives list at the top, HUD with path/hover/sizes.
-3. **Files** — open file / reveal in Explorer, previews on faces (text, hex,
-   image thumbnails), type-to-search lights up matching towers.
+3. **Files** ← **in progress** — open file / reveal in Explorer, previews on
+   faces (text, hex, image thumbnails), type-to-search lights up matching
+   towers. User chose: videos actually *play* (a few seconds looping, via the
+   installed FFmpeg CLI) with glitch shader effects (tearing, RGB split,
+   flicker) on image/video previews. Programs/scripts are never run from
+   Gibson: revealed in Explorer instead.
 4. **Alive** — live updates (notify crate), autopilot flythrough/screensaver,
    colour themes (e.g. the film's orange/magenta "under attack" palette).
 5. **Cross-platform** — verify macOS/Linux, then a web build.
