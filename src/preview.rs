@@ -121,9 +121,21 @@ pub fn have_ffmpeg() -> bool {
     })
 }
 
-/// An FFmpeg-suite command that doesn't flash a console window.
-fn tool(name: &str) -> Command {
-    let mut c = Command::new(name);
+/// An FFmpeg-suite command (`ffmpeg`, `ffprobe`) that doesn't flash a console
+/// window. Apps started from Finder don't get the shell's PATH, so on macOS look in
+/// Homebrew's and MacPorts' folders too.
+pub fn tool(name: &str) -> Command {
+    let mut program = std::path::PathBuf::from(name);
+    if cfg!(target_os = "macos") {
+        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] {
+            let p = Path::new(dir).join(name);
+            if p.exists() {
+                program = p;
+                break;
+            }
+        }
+    }
+    let mut c = Command::new(program);
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

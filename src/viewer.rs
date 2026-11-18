@@ -106,13 +106,7 @@ impl Video {
 }
 
 fn tool(name: &str) -> Command {
-    let mut c = Command::new(name);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-    }
-    c
+    crate::preview::tool(name)
 }
 
 /// Width, height and length of a video (ffprobe).

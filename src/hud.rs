@@ -178,11 +178,13 @@ impl Hud {
         self.fill(Rect { x, y: u(10.0), w: 1, h: bar_h - u(20.0) }, DIM, 0.8);
         x += u(12.0);
 
+        // The drive we're on: the longest one the path starts with (home beats /).
+        let on = st.drives.iter().filter(|d| st.path.starts_with(d)).max_by_key(|d| d.as_os_str().len()).cloned();
         for d in st.drives.clone() {
             let label = drive_label(&d);
             let tw = text_width(&fonts.mono, mono, &label).ceil() as i32;
             let r = Rect { x, y: u(8.0), w: tw + u(16.0), h: bar_h - u(16.0) };
-            let here = st.path.starts_with(&d);
+            let here = on.as_ref() == Some(&d);
             let hot = st.hot == Some(self.hits.len());
             if here {
                 self.fill(r, CYAN, 0.85);
@@ -715,8 +717,14 @@ fn text_width(font: &Font, px: f32, text: &str) -> f32 {
     text.chars().map(|c| font.metrics(c, px).advance_width).sum()
 }
 
-/// "C:\" → "C:", "/" → "/".
+/// "C:\" → "C:", "/" → "/", the home folder → "HOME", "/Volumes/Data" → "DATA".
 fn drive_label(d: &Path) -> String {
+    if std::env::var_os("HOME").is_some_and(|h| Path::new(&h) == d) && !cfg!(windows) {
+        return "HOME".into();
+    }
+    if d.parent().is_some_and(|p| p == Path::new("/Volumes") || p == Path::new("/media") || p == Path::new("/mnt")) {
+        return d.file_name().map(|n| n.to_string_lossy().to_uppercase()).unwrap_or_default();
+    }
     let s = d.display().to_string();
     let t = s.trim_end_matches(['\\', '/']);
     if t.is_empty() { "/".into() } else { t.to_uppercase() }

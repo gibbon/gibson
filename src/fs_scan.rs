@@ -89,7 +89,18 @@ pub fn drives() -> Vec<PathBuf> {
             .filter(|p| fs::metadata(p).is_ok())
             .collect()
     } else {
-        vec![PathBuf::from("/")]
+        let mut v: Vec<PathBuf> = std::env::var_os("HOME").map(PathBuf::from).into_iter().collect();
+        v.push(PathBuf::from("/"));
+        let mounts = if cfg!(target_os = "macos") { vec![PathBuf::from("/Volumes")] } else { vec![PathBuf::from("/media"), PathBuf::from("/mnt")] };
+        for m in mounts {
+            if let Ok(rd) = fs::read_dir(&m) {
+                let mut found: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+                found.sort();
+                // macOS lists the startup disk in /Volumes too, as a link to /.
+                v.extend(found.into_iter().filter(|p| fs::canonicalize(p).map_or(true, |c| c != Path::new("/"))));
+            }
+        }
+        v
     }
 }
 

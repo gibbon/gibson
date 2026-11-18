@@ -1,5 +1,8 @@
 // Gibson — fly through your file system as a city of glass towers.
 
+// Release builds on Windows are a normal windowed app (no console); see the log file.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+
 mod cache;
 mod audio;
 mod camera;
@@ -26,7 +29,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
+use winit::dpi::LogicalSize;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -663,6 +666,13 @@ impl Running {
         self.update_matches();
     }
 
+    /// Ctrl (or Cmd on a Mac) is down.
+    fn command_held(&self) -> bool {
+        [KeyCode::ControlLeft, KeyCode::ControlRight, KeyCode::SuperLeft, KeyCode::SuperRight]
+            .iter()
+            .any(|k| self.keys.contains(k))
+    }
+
     /// Where the cursor is along the viewer's timeline, 0..1.
     fn scrub_fraction(&self) -> f32 {
         match self.hud.scrub {
@@ -1015,7 +1025,14 @@ impl ApplicationHandler for App {
         if self.state.is_some() {
             return;
         }
-        let attrs = Window::default_attributes().with_title("GIBSON").with_inner_size(PhysicalSize::new(1600, 900));
+        // 1600×900 points, or less to fit the screen (logical size: right on Retina too).
+        let (mut lw, mut lh) = (1600.0, 900.0);
+        if let Some(m) = event_loop.primary_monitor() {
+            let s = m.size().to_logical::<f64>(m.scale_factor());
+            let k = (s.width * 0.85 / lw).min(s.height * 0.85 / lh).min(1.0);
+            (lw, lh) = (lw * k, lh * k);
+        }
+        let attrs = Window::default_attributes().with_title("GIBSON").with_inner_size(LogicalSize::new(lw, lh));
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         let renderer = pollster::block_on(render::Renderer::new(window.clone()));
         let (tx, rx) = channel();
@@ -1140,12 +1157,20 @@ impl ApplicationHandler for App {
                                     s.help = !s.help
                                 }
                                 KeyCode::Slash if !event.repeat => s.open_search(),
-                                KeyCode::KeyF
+                                KeyCode::KeyF if !event.repeat && s.command_held() => s.open_search(),
+                                // macOS: Cmd+[ / Cmd+Left back, Cmd+Up up (as in Finder)
+                                KeyCode::BracketLeft if !event.repeat && s.command_held() => s.go_back(),
+                                KeyCode::ArrowLeft
                                     if !event.repeat
-                                        && (s.keys.contains(&KeyCode::ControlLeft)
-                                            || s.keys.contains(&KeyCode::ControlRight)) =>
+                                        && (s.keys.contains(&KeyCode::SuperLeft) || s.keys.contains(&KeyCode::SuperRight)) =>
                                 {
-                                    s.open_search()
+                                    s.go_back()
+                                }
+                                KeyCode::ArrowUp
+                                    if !event.repeat
+                                        && (s.keys.contains(&KeyCode::SuperLeft) || s.keys.contains(&KeyCode::SuperRight)) =>
+                                {
+                                    s.go_up()
                                 }
                                 KeyCode::KeyR if !event.repeat => s.reveal(),
                                 KeyCode::KeyV if !event.repeat => s.view_target(),
@@ -1235,7 +1260,7 @@ impl ApplicationHandler for App {
             WindowEvent::MouseWheel { delta, .. } => {
                 let y = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
-                    MouseScrollDelta::PixelDelta(p) => p.y as f32 / 60.0,
+                    MouseScrollDelta::PixelDelta(p) => (p.y as f32 / 240.0).clamp(-1.0, 1.0), // trackpads
                 };
                 s.camera.speed = (s.camera.speed * 1.15f32.powf(y)).clamp(3.0, 400.0);
             }
@@ -1256,8 +1281,19 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn,naga=warn"))
-        .init();
+    // Log to stderr when there's a terminal (debug builds), and always to
+    // gibson.log next to the settings, so a double-clicked app leaves a trace.
+    let mut logger =
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info,wgpu_core=warn,wgpu_hal=warn,naga=warn"));
+    if !cfg!(debug_assertions) {
+        if let Some(dir) = settings::dir() {
+            let _ = std::fs::create_dir_all(&dir);
+            if let Ok(f) = std::fs::File::create(dir.join("gibson.log")) {
+                logger.target(env_logger::Target::Pipe(Box::new(f)));
+            }
+        }
+    }
+    logger.init();
     let start_path = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)

@@ -1,5 +1,6 @@
 // Remembered choices, as `key=value` lines in a small settings file:
-// %APPDATA%\Gibson\settings.txt on Windows, ~/.config/gibson/settings.txt elsewhere.
+// %APPDATA%\Gibson\ on Windows, ~/Library/Application Support/Gibson/ on macOS,
+// ~/.config/gibson/ elsewhere.
 
 use std::path::PathBuf;
 
@@ -16,16 +17,22 @@ impl Default for Settings {
     }
 }
 
-fn file() -> Option<PathBuf> {
-    let dir = if cfg!(windows) {
+/// Where Gibson keeps its settings and log.
+pub fn dir() -> Option<PathBuf> {
+    Some(if cfg!(windows) {
         PathBuf::from(std::env::var_os("APPDATA")?).join("Gibson")
+    } else if cfg!(target_os = "macos") {
+        PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/Gibson")
     } else {
         std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?
             .join("gibson")
-    };
-    Some(dir.join("settings.txt"))
+    })
+}
+
+fn file() -> Option<PathBuf> {
+    Some(dir()?.join("settings.txt"))
 }
 
 pub fn load() -> Settings {
