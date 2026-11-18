@@ -42,6 +42,12 @@ banking flights down lanes.
    installed FFmpeg CLI) with glitch shader effects (tearing, RGB split,
    flicker) on image/video previews. Programs/scripts are never run from
    Gibson: revealed in Explorer instead.
+   Done so far (awaiting user test): open/reveal (R), search (/ or Ctrl+F),
+   image previews and looping video clips (nearest 4 within 170 units, 2 s at
+   12 fps, decoded by `ffmpeg` on PATH) with the glitch shader. Screenshots:
+   use PrintWindow on the Gibson window only (never full-screen captures —
+   the user's other windows are private), and don't send synthetic input
+   while the user is at the machine.
 4. **Alive** — live updates (notify crate), autopilot flythrough/screensaver,
    colour themes (e.g. the film's orange/magenta "under attack" palette).
 5. **Cross-platform** — verify macOS/Linux, then a web build.

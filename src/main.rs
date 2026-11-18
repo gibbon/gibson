@@ -7,6 +7,7 @@ mod files;
 mod fs_scan;
 mod hud;
 mod nav;
+mod preview;
 mod render;
 mod textgen;
 
@@ -14,7 +15,7 @@ use camera::{Camera, FlyInput};
 use city::City;
 use glam::Vec3;
 use rayon::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,7 +31,15 @@ use winit::window::{CursorIcon, Window, WindowId};
 /// Work coming back from the loader threads.
 enum Msg {
     Scanned { generation: u64, path: PathBuf, result: Result<Vec<fs_scan::Entry>, String> },
-    Baked { generation: u64, index: usize, pages: Vec<textgen::Page>, cached: bool },
+    Baked {
+        generation: u64,
+        index: usize,
+        pages: Vec<textgen::Page>,
+        cached: bool,
+        preview: Option<Arc<preview::Preview>>,
+        seek: f32,
+    },
+    Clip { generation: u64, index: usize, frames: Option<Vec<preview::Preview>> },
     Drives(Vec<PathBuf>),
 }
 
@@ -39,6 +48,8 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const CLICK_SLOP: f64 = 5.0; // pixels the mouse may move and still count as a click
 const HUD_MIN_INTERVAL: Duration = Duration::from_millis(33); // HUD redraws at most ~30/s
 const HISTORY_MAX: usize = 100;
+const MAX_PLAYING: usize = 4; // videos playing at once (the nearest)
+const PLAY_DISTANCE: f32 = 170.0;
 
 struct Running {
     window: Arc<Window>,
@@ -56,7 +67,10 @@ struct Running {
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     fonts: Arc<textgen::Fonts>,
-    pending: Vec<(usize, Vec<textgen::Page>, bool)>, // baked pages (and from cache?), waiting for upload
+    pending: Vec<Baked>, // baked towers, waiting for upload
+    clips: HashMap<usize, (Vec<preview::Preview>, usize)>, // tower → video frames, frame shown
+    clip_loading: HashSet<usize>,
+    clip_failed: HashSet<usize>,
     cache: cache::PageCache,
     hud: hud::Hud,
     drives: Vec<PathBuf>,
@@ -146,8 +160,19 @@ impl Running {
                         }
                     }
                 }
-                Msg::Baked { generation, index, pages, cached } if generation == self.generation => {
-                    self.pending.push((index, pages, cached));
+                Msg::Baked { generation, index, pages, cached, preview, seek } if generation == self.generation => {
+                    self.pending.push(Baked { index, pages, cached, preview, seek });
+                }
+                Msg::Clip { generation, index, frames } if generation == self.generation => {
+                    self.clip_loading.remove(&index);
+                    match frames {
+                        Some(f) => {
+                            self.clips.insert(index, (f, usize::MAX));
+                        }
+                        None => {
+                            self.clip_failed.insert(index);
+                        }
+                    }
                 }
                 Msg::Drives(d) => self.drives = d,
                 _ => {} // stale: from a folder we've already left
@@ -157,8 +182,15 @@ impl Running {
         if let Some(city) = &mut self.city {
             let mut uploaded = 0;
             while uploaded < PAGE_UPLOADS_PER_FRAME {
-                let Some((index, pages, cached)) = self.pending.pop() else { break };
+                let Some(Baked { index, pages, cached, preview, seek }) = self.pending.pop() else { break };
                 let t = &mut city.towers[index];
+                if let (Some(layer), Some(p)) = (t.pv_layer, preview) {
+                    self.renderer.upload_preview(layer, &p.mips);
+                    t.pv_size = Some((p.w, p.h));
+                    t.pv_seek = seek;
+                    t.pv_still = Some(p);
+                    uploaded += 1;
+                }
                 if cached {
                     t.appear = 1.0; // seen before: no need to rise again
                 }
@@ -189,6 +221,9 @@ impl Running {
         let city = City::build(entries, self.renderer.max_face_layers);
         self.renderer.reserve_face_layers(city.layers());
         self.pending.clear();
+        self.clips.clear();
+        self.clip_loading.clear();
+        self.clip_failed.clear();
         self.hovered = None;
         self.hovered_name = None;
         self.selected = None;
@@ -214,27 +249,47 @@ impl Running {
 
         // Bake every face in parallel, off the UI thread.
         let generation = self.generation;
-        let jobs: Vec<(usize, fs_scan::Entry, f32, u32)> =
-            city.towers.iter().enumerate().map(|(i, t)| (i, t.entry.clone(), t.seed, t.max_pages)).collect();
+        let jobs: Vec<(usize, fs_scan::Entry, f32, u32, Option<preview::PvKind>)> = city
+            .towers
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (i, t.entry.clone(), t.seed, t.max_pages, t.pv_layer.and(t.pv_kind)))
+            .collect();
         // On a pool that leaves cores free for flying, and skipping work as soon as
         // we've moved on to another folder.
         // Pages baked before (and unchanged) come straight from the cache.
         let (tx, fonts, live, cache) = (self.tx.clone(), self.fonts.clone(), self.live_gen.clone(), self.cache.clone());
         self.bake_pool.spawn(move || {
-            jobs.into_par_iter().for_each(|(index, entry, seed, max_pages)| {
+            jobs.into_par_iter().for_each(|(index, entry, seed, max_pages, pv_kind)| {
                 if live.load(Ordering::Relaxed) != generation {
                     return;
                 }
                 let key = cache::key(&entry, seed, max_pages);
-                let (pages, cached) = match cache.get(key) {
-                    Some(packed) => (packed.iter().map(|p| p.unpack(textgen::mips_len())).collect(), true),
+                let (pages, cached, preview, seek) = match cache.get(key) {
+                    Some(c) => (
+                        c.pages.iter().map(|p| p.unpack(textgen::mips_len())).collect(),
+                        true,
+                        c.preview.clone(),
+                        c.seek,
+                    ),
                     None => {
-                        let pages = textgen::bake(&entry, seed, &fonts, max_pages);
-                        cache.put(key, pages.iter().map(cache::PackedPage::pack).collect());
-                        (pages, false)
+                        // The picture first: the front page leaves room for it.
+                        let (preview, seek) = match pv_kind {
+                            Some(preview::PvKind::Image) => (preview::image(&entry.path).map(Arc::new), 0.0),
+                            Some(preview::PvKind::Video) => match preview::video_still(&entry.path) {
+                                Some((p, s)) => (Some(Arc::new(p)), s),
+                                None => (None, 0.0),
+                            },
+                            None => (None, 0.0),
+                        };
+                        let picture = preview.as_ref().map(|p| (p.w, p.h));
+                        let pages = textgen::bake(&entry, seed, &fonts, max_pages, picture);
+                        let packed = pages.iter().map(cache::PackedPage::pack).collect();
+                        cache.put(key, cache::Cached { pages: packed, preview: preview.clone(), seek });
+                        (pages, false, preview, seek)
                     }
                 };
-                let _ = tx.send(Msg::Baked { generation, index, pages, cached });
+                let _ = tx.send(Msg::Baked { generation, index, pages, cached, preview, seek });
             });
         });
         log::info!(
@@ -248,6 +303,59 @@ impl Running {
         self.city = Some(city);
         self.path = path;
         self.update_matches();
+    }
+
+    /// Plays the nearest few videos (looping clips decoded by FFmpeg); the others show
+    /// their still frame.
+    fn play_videos(&mut self, time: f32) {
+        if !preview::ffmpeg_ready() {
+            return;
+        }
+        let Some(city) = &self.city else { return };
+        let cam = self.camera.pos;
+        let mut near: Vec<(f32, usize)> = city
+            .towers
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.pv_video && t.pv_size.is_some() && t.appear > 0.99)
+            .map(|(i, t)| ((t.base + Vec3::Y * t.size.y.min(t.size.x * 2.0) * 0.5).distance(cam), i))
+            .filter(|&(d, i)| d < PLAY_DISTANCE && !self.clip_failed.contains(&i))
+            .collect();
+        near.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let wanted: Vec<usize> = near.iter().take(MAX_PLAYING).map(|&(_, i)| i).collect();
+
+        // Out of range: back to the still frame, and free the frames.
+        let gone: Vec<usize> = self.clips.keys().copied().filter(|i| !wanted.contains(i)).collect();
+        for i in gone {
+            self.clips.remove(&i);
+            let t = &city.towers[i];
+            if let (Some(layer), Some(still)) = (t.pv_layer, &t.pv_still) {
+                self.renderer.upload_preview(layer, &still.mips);
+            }
+        }
+        for &i in &wanted {
+            let t = &city.towers[i];
+            let Some(layer) = t.pv_layer else { continue };
+            match self.clips.get_mut(&i) {
+                Some((frames, shown)) => {
+                    let f = ((time * preview::CLIP_FPS) as usize + i * 7) % frames.len();
+                    if f != *shown {
+                        self.renderer.upload_preview(layer, &frames[f].mips);
+                        *shown = f;
+                    }
+                }
+                None if !self.clip_loading.contains(&i) => {
+                    self.clip_loading.insert(i);
+                    let (path, seek, h) = (t.entry.path.clone(), t.pv_seek, t.pv_size.map_or(0, |s| s.1));
+                    let (tx, generation) = (self.tx.clone(), self.generation);
+                    std::thread::spawn(move || {
+                        let frames = preview::video_clip(&path, seek, h);
+                        let _ = tx.send(Msg::Clip { generation, index: i, frames });
+                    });
+                }
+                None => {}
+            }
+        }
     }
 
     /// Left click (press + release without dragging).
@@ -496,6 +604,8 @@ impl Running {
                 t.dim += (dim - t.dim) * (1.0 - (-dt * 8.0).exp());
             }
         }
+        self.play_videos(time);
+
         let icon = if self.hot.is_some() || self.hovered.is_some() { CursorIcon::Pointer } else { CursorIcon::Default };
         if icon != self.cursor_icon {
             self.cursor_icon = icon;
@@ -612,6 +722,15 @@ fn hover_info(e: &fs_scan::Entry) -> hud::HoverInfo {
     hud::HoverInfo { name: e.name.clone(), detail }
 }
 
+/// A tower's baked pages (and preview), waiting to be uploaded.
+struct Baked {
+    index: usize,
+    pages: Vec<textgen::Page>,
+    cached: bool,
+    preview: Option<Arc<preview::Preview>>,
+    seek: f32,
+}
+
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_some() {
@@ -627,6 +746,7 @@ impl ApplicationHandler for App {
             std::thread::spawn(move || {
                 let _ = tx.send(Msg::Drives(fs_scan::drives()));
             });
+            std::thread::spawn(preview::have_ffmpeg);
         }
         let now = Instant::now();
         let mut s = Running {
@@ -652,6 +772,9 @@ impl ApplicationHandler for App {
             rx,
             fonts: Arc::new(textgen::Fonts::load()),
             pending: Vec::new(),
+            clips: HashMap::new(),
+            clip_loading: HashSet::new(),
+            clip_failed: HashSet::new(),
             cache: cache::PageCache::default(),
             hud: hud::Hud::new(),
             drives: Vec::new(),

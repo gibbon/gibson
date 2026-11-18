@@ -13,6 +13,11 @@ struct Globals {
 @group(0) @binding(0) var<uniform> g: Globals;
 @group(1) @binding(0) var faces: texture_2d_array<f32>;
 @group(1) @binding(1) var samp: sampler;
+@group(1) @binding(2) var previews: texture_2d_array<f32>; // colour pictures / video frames
+
+fn hash(p: vec2<f32>) -> f32 {
+    return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453);
+}
 
 struct VIn {
     @location(0) pos: vec3<f32>,      // unit box: x,z in −0.5..0.5, y in 0..1
@@ -21,7 +26,9 @@ struct VIn {
     @location(3) size: vec3<f32>,
     @location(4) text_col: vec4<f32>, // rgb, a = appear (fade-in)
     @location(5) body_col: vec4<f32>, // rgb, a = hover
-    @location(6) misc: vec4<f32>,     // layer, seed, has_texture, 0
+    @location(6) misc: vec4<f32>,     // layer, seed, has_texture, pages
+    @location(7) pv: vec4<f32>,       // preview: layer (−1 none), used width, used height, is video
+    @location(8) pv_rect: vec4<f32>,  // its box on the page: u0, v0, u1, v1
 };
 
 struct VOut {
@@ -32,6 +39,8 @@ struct VOut {
     @location(3) @interpolate(flat) text_col: vec4<f32>,
     @location(4) @interpolate(flat) body_col: vec4<f32>,
     @location(5) @interpolate(flat) misc: vec4<f32>,
+    @location(6) @interpolate(flat) pv: vec4<f32>,
+    @location(7) @interpolate(flat) pv_rect: vec4<f32>,
 };
 
 @vertex
@@ -58,6 +67,8 @@ fn vs(v: VIn) -> VOut {
     o.text_col = v.text_col;
     o.body_col = v.body_col;
     o.misc = v.misc;
+    o.pv = v.pv;
+    o.pv_rect = v.pv_rect;
     return o;
 }
 
@@ -83,7 +94,48 @@ fn fs(i: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     // Gradients from the continuous coordinate, so mips don't seam at page edges.
     let cont = vec2<f32>(i.fuv.x / fw, tv);
     let puv = vec2<f32>(cont.x, tv - tile);
-    let text = textureSampleGrad(faces, samp, puv, i32(i.misc.x + page), dpdx(cont), dpdy(cont)).r * i.misc.z;
+    let gx = dpdx(cont);
+    let gy = dpdy(cont);
+    let text = textureSampleGrad(faces, samp, puv, i32(i.misc.x + page), gx, gy).r * i.misc.z;
+
+    // ── Preview picture (images, video frames), in its box at the top of every side,
+    // as a glitching hologram: torn rows, jumped blocks, RGB split, scanlines, flicker.
+    var pic = vec3<f32>(0.0);
+    var pic_mask = 0.0;
+    let pv = i.pv;
+    if (pv.x >= 0.0 && !top && tile < 0.5) {
+        let pr = i.pv_rect;
+        let in_pic = step(pr.x, puv.x) * step(puv.x, pr.z) * step(pr.y, puv.y) * step(puv.y, pr.w);
+        if (in_pic > 0.5) {
+            let box = pr.zw - pr.xy;
+            var q = (puv - pr.xy) / box; // 0..1 across the picture
+            let tick = floor(t * 14.0);
+            let burst = step(0.84, hash(vec2<f32>(floor(t * 2.5), seed))); // now and then, a fit
+            let band = floor(q.y * 36.0);
+            let jag = hash(vec2<f32>(band, tick + seed));
+            q.x += (jag - 0.5) * 0.12 * burst * step(0.55, jag) + (jag - 0.5) * 0.004;
+            let blk = hash(floor(q * vec2<f32>(8.0, 14.0)) + vec2<f32>(tick, seed));
+            q.x += 0.04 * burst * step(0.92, blk);
+            let scale = pv.yz; // the part of the layer the picture fills
+            let uvq = clamp(q, vec2<f32>(0.0), vec2<f32>(1.0)) * scale;
+            let ggx = gx / box * scale;
+            let ggy = gy / box * scale;
+            let split = vec2<f32>((0.002 + 0.012 * burst) * (1.0 + pv.w) * scale.x, 0.0);
+            let lay = i32(pv.x);
+            pic = vec3<f32>(
+                textureSampleGrad(previews, samp, uvq + split, lay, ggx, ggy).r,
+                textureSampleGrad(previews, samp, uvq, lay, ggx, ggy).g,
+                textureSampleGrad(previews, samp, uvq - split, lay, ggx, ggy).b);
+            let scan = 0.84 + 0.16 * sin(q.y * 560.0);
+            let flick = 0.9 + 0.1 * hash(vec2<f32>(tick, seed * 3.1));
+            let roll = exp(-abs(fract(q.y - t * 0.22 + seed) - 0.5) * 36.0);
+            pic = pic * scan * flick + vec3<f32>(0.45, 0.9, 1.0) * roll * 0.12;
+            pic *= 1.0 - 0.9 * step(0.95, hash(vec2<f32>(band, tick * 1.3 + seed))) * burst; // dropped rows
+            let lum = dot(pic, vec3<f32>(0.299, 0.587, 0.114));
+            pic = mix(pic, vec3<f32>(0.35, 0.85, 1.0) * lum * 1.4, 0.28); // glass-cyan cast
+            pic_mask = 1.0;
+        }
+    }
 
     // The name under the mouse: an amber bar behind it, its letters lit up.
     let r = g.hl_rect;
@@ -109,7 +161,10 @@ fn fs(i: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     emissive += vec3<f32>(0.75, 0.38, 1.0) * text * hover * 1.2 * face_k;   // hovered: magenta lift
     emissive = mix(emissive, vec3<f32>(1.0, 0.7, 0.26) * (0.3 + text * 2.4) * face_k, hl);
 
+    emissive = mix(emissive, pic * 1.1 * face_k, pic_mask);
+
     var alpha = select(0.25, 0.5, front); // darker glass in front = more contrast
+    alpha = mix(alpha, select(0.3, 0.88, front), pic_mask);
     var body = i.body_col.rgb * (1.0 + hover * 0.8);
 
     // Distance haze: emissive fades to the haze colour, then everything to black.

@@ -2,6 +2,7 @@
 
 use crate::city::{City, Kind};
 use crate::fs_scan::MAX_ENTRIES;
+use crate::preview::{PV, PV_LAYERS, PV_MIPS};
 use crate::textgen::{mip_size, MIP_LEVELS, TEX_H, TEX_W};
 use bytemuck::{Pod, Zeroable};
 use glam::{Mat4, Vec3};
@@ -50,6 +51,8 @@ struct Instance {
     text_col: [f32; 4],
     body_col: [f32; 4],
     misc: [f32; 4],
+    pv: [f32; 4],      // preview: layer (−1 none), used width, used height (0..1), is video
+    pv_rect: [f32; 4], // where it goes on the page: u0, v0, u1, v1
 }
 
 #[repr(C)]
@@ -81,6 +84,8 @@ pub struct Renderer {
     faces_bind: wgpu::BindGroup,
     faces_layout: wgpu::BindGroupLayout,
     faces_sampler: wgpu::Sampler,
+    preview_tex: wgpu::Texture,
+    preview_view: wgpu::TextureView,
     face_capacity: u32,
     pub max_face_layers: u32,
     box_vb: wgpu::Buffer,
@@ -195,10 +200,26 @@ impl Renderer {
             entries: &[
                 tex_entry(0, wgpu::TextureViewDimension::D2Array),
                 sampler_entry(1),
+                tex_entry(2, wgpu::TextureViewDimension::D2Array),
             ],
         });
         let face_capacity = FACE_LAYERS_MIN.min(max_face_layers);
-        let (faces_tex, faces_bind) = make_faces(&device, &faces_layout, &faces_sampler, face_capacity);
+        // Colour previews (images, video frames): one RGBA layer each.
+        let preview_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("previews"),
+            size: wgpu::Extent3d { width: PV, height: PV, depth_or_array_layers: PV_LAYERS },
+            mip_level_count: PV_MIPS,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let preview_view = preview_tex.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let (faces_tex, faces_bind) = make_faces(&device, &faces_layout, &faces_sampler, face_capacity, &preview_view);
 
         // ── Geometry ─────────────────────────────────────────────────────────
         let box_vb = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -260,7 +281,7 @@ impl Renderer {
             immediate_size: 0,
         });
         let box_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3];
-        let inst_attrs = wgpu::vertex_attr_array![2 => Float32x3, 3 => Float32x3, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4];
+        let inst_attrs = wgpu::vertex_attr_array![2 => Float32x3, 3 => Float32x3, 4 => Float32x4, 5 => Float32x4, 6 => Float32x4, 7 => Float32x4, 8 => Float32x4];
         let tower_pipe = |cull: wgpu::Face| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("tower"),
@@ -434,6 +455,8 @@ impl Renderer {
             faces_bind,
             faces_layout,
             faces_sampler,
+            preview_tex,
+            preview_view,
             face_capacity,
             max_face_layers,
             box_vb,
@@ -534,7 +557,7 @@ impl Renderer {
             return;
         }
         let cap = want.next_multiple_of(64).min(self.max_face_layers);
-        let (tex, bind) = make_faces(&self.device, &self.faces_layout, &self.faces_sampler, cap);
+        let (tex, bind) = make_faces(&self.device, &self.faces_layout, &self.faces_sampler, cap, &self.preview_view);
         self.faces_tex = tex;
         self.faces_bind = bind;
         self.face_capacity = cap;
@@ -542,6 +565,27 @@ impl Renderer {
     }
 
     /// Uploads a baked face texture (full mip chain) into an array layer.
+    /// Uploads a preview picture (RGBA, full mip chain) into its layer.
+    pub fn upload_preview(&self, layer: u32, mips: &[u8]) {
+        let mut off = 0usize;
+        for level in 0..PV_MIPS {
+            let s = (PV >> level).max(1);
+            let len = (s * s * 4) as usize;
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.preview_tex,
+                    mip_level: level,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &mips[off..off + len],
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(s * 4), rows_per_image: Some(s) },
+                wgpu::Extent3d { width: s, height: s, depth_or_array_layers: 1 },
+            );
+            off += len;
+        }
+    }
+
     pub fn upload_face(&self, layer: u32, mips: &[u8]) {
         let mut off = 0usize;
         for level in 0..MIP_LEVELS {
@@ -688,6 +732,7 @@ fn make_faces(
     layout: &wgpu::BindGroupLayout,
     sampler: &wgpu::Sampler,
     layers: u32,
+    previews: &wgpu::TextureView,
 ) -> (wgpu::Texture, wgpu::BindGroup) {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("faces"),
@@ -709,6 +754,7 @@ fn make_faces(
         entries: &[
             wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
             wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(previews) },
         ],
     });
     (tex, bind)
@@ -740,6 +786,17 @@ fn instance_of(t: &crate::city::Tower) -> Instance {
         text_col: [text[0], text[1], text[2], ease],
         body_col: [body[0], body[1], body[2], t.hover],
         misc: [t.layer.unwrap_or(0) as f32, t.seed, 1.0, t.pages.max(1) as f32],
+        pv: match (t.pv_layer, t.pv_size) {
+            (Some(l), Some((w, h))) => [l as f32, w as f32 / PV as f32, h as f32 / PV as f32, t.pv_video as u8 as f32],
+            _ => [-1.0, 0.0, 0.0, 0.0],
+        },
+        pv_rect: match t.pv_size {
+            Some((w, h)) => {
+                let (x0, y0, rw, rh) = crate::preview::page_rect(w, h);
+                [x0 / TEX_W as f32, y0 / TEX_H as f32, (x0 + rw) / TEX_W as f32, (y0 + rh) / TEX_H as f32]
+            }
+            None => [0.0; 4],
+        },
     }
 }
 

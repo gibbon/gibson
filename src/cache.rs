@@ -2,12 +2,27 @@
 // or Up shows the city at once instead of rebuilding every page.
 
 use crate::fs_scan::Entry;
+use crate::preview::Preview;
 use crate::textgen::{LineHit, Page};
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, Mutex};
 
-const CACHE_BYTES: usize = 256 * 1024 * 1024;
+const CACHE_BYTES: usize = 384 * 1024 * 1024;
+
+/// What's kept per tower: its packed pages, and its preview picture (plus, for
+/// videos, where in the video the picture came from).
+pub struct Cached {
+    pub pages: Vec<PackedPage>,
+    pub preview: Option<Arc<Preview>>,
+    pub seek: f32,
+}
+
+impl Cached {
+    fn bytes(&self) -> usize {
+        self.pages.iter().map(PackedPage::bytes).sum::<usize>() + self.preview.as_ref().map_or(0, |p| p.bytes())
+    }
+}
 
 /// A page, compressed: pages are mostly black, so zero runs are stored as (0, run).
 pub struct PackedPage {
@@ -74,7 +89,7 @@ pub fn key(e: &Entry, seed: f32, max_pages: u32) -> u64 {
 
 #[derive(Default)]
 struct Inner {
-    map: HashMap<u64, Arc<Vec<PackedPage>>>,
+    map: HashMap<u64, Arc<Cached>>,
     order: VecDeque<u64>, // oldest first
     bytes: usize,
 }
@@ -84,7 +99,7 @@ struct Inner {
 pub struct PageCache(Arc<Mutex<Inner>>);
 
 impl PageCache {
-    pub fn get(&self, key: u64) -> Option<Arc<Vec<PackedPage>>> {
+    pub fn get(&self, key: u64) -> Option<Arc<Cached>> {
         let mut c = self.0.lock().unwrap();
         let hit = c.map.get(&key).cloned();
         if hit.is_some() {
@@ -97,17 +112,17 @@ impl PageCache {
         hit
     }
 
-    pub fn put(&self, key: u64, pages: Vec<PackedPage>) {
-        let size: usize = pages.iter().map(PackedPage::bytes).sum();
+    pub fn put(&self, key: u64, entry: Cached) {
+        let size = entry.bytes();
         let mut c = self.0.lock().unwrap();
-        if c.map.insert(key, Arc::new(pages)).is_none() {
+        if c.map.insert(key, Arc::new(entry)).is_none() {
             c.order.push_back(key);
             c.bytes += size;
         }
         while c.bytes > CACHE_BYTES {
             let Some(old) = c.order.pop_front() else { break };
             if let Some(p) = c.map.remove(&old) {
-                c.bytes -= p.iter().map(PackedPage::bytes).sum::<usize>();
+                c.bytes -= p.bytes();
             }
         }
     }

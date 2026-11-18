@@ -206,14 +206,15 @@ impl Walk {
 
 /// Bakes up to `max_pages` face pages (each a full mip chain). Page 0 is the tower's
 /// front page; later pages continue through the content where the last one stopped.
-pub fn bake(e: &Entry, seed: f32, fonts: &Fonts, max_pages: u32) -> Vec<Page> {
+/// `picture`: size of a preview image that the front page leaves room for.
+pub fn bake(e: &Entry, seed: f32, fonts: &Fonts, max_pages: u32, picture: Option<(u32, u32)>) -> Vec<Page> {
     let mut rng = Rng(seed.to_bits() as u64 * 0x2545_F491_4F6C_DD1D + 7);
     let mut walk = Walk { line: 0, hex: 0, wrap: max_pages <= 1, hits: Vec::new() };
     let mut pages = Vec::new();
     for p in 0..max_pages.max(1) {
         let mut c = Canvas::new();
         if p == 0 {
-            front_page(&mut c, e, &mut rng, &mut walk, fonts);
+            front_page(&mut c, e, &mut rng, &mut walk, fonts, picture);
         } else {
             next_page(&mut c, e, &mut rng, &mut walk, fonts);
         }
@@ -225,7 +226,7 @@ pub fn bake(e: &Entry, seed: f32, fonts: &Fonts, max_pages: u32) -> Vec<Page> {
     pages
 }
 
-fn front_page(c: &mut Canvas, e: &Entry, rng: &mut Rng, walk: &mut Walk, fonts: &Fonts) {
+fn front_page(c: &mut Canvas, e: &Entry, rng: &mut Rng, walk: &mut Walk, fonts: &Fonts, picture: Option<(u32, u32)>) {
     let full = Rect { x: 0, y: 0, w: TEX_W as i32, h: TEX_H as i32 };
     let m = 14; // margin
 
@@ -269,6 +270,18 @@ fn front_page(c: &mut Canvas, e: &Entry, rng: &mut Rng, walk: &mut Walk, fonts: 
         y = ly as i32 + 4;
         c.fill(Rect { x: m, y, w: TEX_W as i32 - 2 * m, h: 1 }, 150);
         y += 8;
+    }
+
+    // ── Picture (images, videos): leave its box empty, framed; the shader fills it ─
+    if let Some((pw, ph)) = picture {
+        let (x0, y0, w, h) = crate::preview::page_rect(pw, ph);
+        let r = Rect { x: x0 as i32 - 3, y: y0 as i32 - 3, w: w as i32 + 6, h: h as i32 + 6 };
+        c.frame(r, 200);
+        // corner ticks
+        for (cx, cy) in [(r.x, r.y), (r.x + r.w - 10, r.y), (r.x, r.y + r.h - 3), (r.x + r.w - 10, r.y + r.h - 3)] {
+            c.fill(Rect { x: cx, y: cy, w: 10, h: 3 }, 255);
+        }
+        y = r.y + r.h + 10;
     }
 
     // ── File types (folders): what the folder is made of ────────────────────

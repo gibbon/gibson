@@ -34,6 +34,12 @@ pub struct Tower {
     pub found: f32,         // eased search match (1 name, 0.5 contents)
     pub dim: f32,           // eased: searching and this doesn't match
     pub page_hits: Vec<Vec<crate::textgen::LineHit>>, // where names sit on each page
+    pub pv_kind: Option<crate::preview::PvKind>, // image / video file
+    pub pv_layer: Option<u32>,          // reserved preview layer
+    pub pv_size: Option<(u32, u32)>,    // preview picture size, once uploaded
+    pub pv_video: bool,
+    pub pv_seek: f32,                   // video: where the still / clip comes from
+    pub pv_still: Option<std::sync::Arc<crate::preview::Preview>>, // shown when not playing
 }
 
 impl Tower {
@@ -95,6 +101,7 @@ impl City {
                     let w = 5.0 + ((1.0 + kb).log10() * 0.8).min(3.0);
                     (w, w * (1.1 + ((1.0 + kb / 10.0).log10() * 0.8).min(3.0)))
                 };
+                let pv_kind = if e.is_dir { None } else { crate::preview::kind(&e.path) };
                 let jitter = Vec3::new(rng.f32() - 0.5, 0.0, rng.f32() - 0.5) * 2.0;
                 Tower {
                     kind: if e.is_dir { Kind::Folder } else { kind_of(&e.name) },
@@ -112,6 +119,12 @@ impl City {
                     found: 0.0,
                     dim: 0.0,
                     page_hits: Vec::new(),
+                    pv_kind,
+                    pv_layer: None,
+                    pv_size: None,
+                    pv_video: false,
+                    pv_seek: 0.0,
+                    pv_still: None,
                 }
             })
             .collect();
@@ -126,6 +139,16 @@ impl City {
             big.max_pages -= 1;
             total -= 1;
         }
+        // Previews: the first PV_LAYERS image/video towers get a layer.
+        let mut pv_next = 0;
+        for t in &mut towers {
+            if t.pv_kind.is_some() && pv_next < crate::preview::PV_LAYERS {
+                t.pv_layer = Some(pv_next);
+                t.pv_video = t.pv_kind == Some(crate::preview::PvKind::Video);
+                pv_next += 1;
+            }
+        }
+
         let mut next = 0;
         for t in &mut towers {
             t.first_layer = next;
