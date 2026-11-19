@@ -1,7 +1,7 @@
 // Autofly: the camera flies itself down the streets between the towers, like the
 // film's flights. Waypoints are street crossings (cell corners); at each one it
-// mostly carries straight on, sometimes turns; heights vary between skimming the
-// floor and rising over the roofs. A Catmull-Rom curve through the waypoints keeps
+// mostly carries straight on, sometimes turns. It cruises along the rooftops and
+// now and then dives down into the streets for a stretch, then climbs back up. A Catmull-Rom curve through the waypoints keeps
 // it smooth, and the camera looks a little way ahead along it.
 
 use crate::city::{City, Rng, CELL};
@@ -13,6 +13,7 @@ pub struct AutoFly {
     s: f32,              // 0..1 along p1 → p2
     at: (i32, i32),      // crossing of the last waypoint
     dir: (i32, i32),     // street direction
+    dive: u32,           // waypoints left down in the streets (0 = up on the roofs)
     rng: Rng,
 }
 
@@ -25,6 +26,16 @@ fn crossing(city: &City, i: i32, j: i32, height: f32) -> Vec3 {
 fn inner(city: &City) -> (i32, i32, i32) {
     let (cols, rows) = (city.cols as i32, city.rows as i32);
     if cols >= 3 && rows >= 3 { (1, cols - 1, rows - 1) } else { (0, cols, rows) }
+}
+
+/// Roof level: the height most towers stay under (the 80th percentile).
+fn roof(city: &City) -> f32 {
+    let mut h: Vec<f32> = city.towers.iter().filter(|t| !t.secret).map(|t| t.size.y).collect();
+    if h.is_empty() {
+        return 12.0;
+    }
+    h.sort_by(f32::total_cmp);
+    h[(h.len() * 4 / 5).min(h.len() - 1)].max(8.0)
 }
 
 fn catmull(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: f32) -> Vec3 {
@@ -43,7 +54,7 @@ impl AutoFly {
         } else {
             (0, if facing.z < 0.0 { -1 } else { 1 })
         };
-        let mut a = AutoFly { pts: VecDeque::new(), s: 0.0, at: (i, j), dir, rng: Rng(seed) };
+        let mut a = AutoFly { pts: VecDeque::new(), s: 0.0, at: (i, j), dir, dive: 0, rng: Rng(seed) };
         let first = crossing(city, i, j, from.y.clamp(6.0, 60.0));
         let back = from - (first - from).normalize_or(Vec3::Z) * 10.0;
         a.pts.extend([back, from, first]);
@@ -73,9 +84,13 @@ impl AutoFly {
             .unwrap_or((-dx, -dz)); // a dead end (tiny city): turn back
         self.dir = d;
         self.at = step(d, self.at);
-        // Mostly low between the towers; now and then up over the roofs.
-        let tallest = city.towers.iter().map(|t| t.size.y).fold(10.0f32, f32::max);
-        let h = if self.rng.f32() < 0.16 { tallest * (0.7 + self.rng.f32() * 0.35) + 4.0 } else { 5.0 + self.rng.f32() * 16.0 };
+        // Up at roof level (just over most towers), diving now and then.
+        if self.dive > 0 {
+            self.dive -= 1;
+        } else if self.rng.f32() < 0.14 {
+            self.dive = 1 + (self.rng.f32() * 2.5) as u32; // 1-3 crossings down low
+        }
+        let h = if self.dive > 0 { 5.0 + self.rng.f32() * 7.0 } else { roof(city) * (0.95 + self.rng.f32() * 0.2) + 3.0 };
         crossing(city, self.at.0, self.at.1, h)
     }
 
@@ -97,7 +112,7 @@ impl AutoFly {
         // Eyes level or down, never up at the empty sky (even while climbing).
         // ...and not steeply down either (about 30° at most), even in a dive.
         let flat = Vec3::new(look.x - pos.x, 0.0, look.z - pos.z).length().max(1.0);
-        let look = Vec3::new(look.x, look.y.min(pos.y).max(pos.y - flat * 0.55) - 1.5, look.z);
+        let look = Vec3::new(look.x, look.y.min(pos.y - flat * 0.1).max(pos.y - flat * 0.55) - 1.5, look.z);
         (pos.max(Vec3::new(f32::MIN, 1.5, f32::MIN)), look)
     }
 }
