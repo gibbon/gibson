@@ -172,7 +172,7 @@ impl Renderer {
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("gibson"),
                 required_limits: wgpu::Limits {
-                    max_texture_array_layers: adapter.limits().max_texture_array_layers.min(crate::city::LAYER_BUDGET),
+                    max_texture_array_layers: adapter.limits().max_texture_array_layers.min(crate::city::LAYER_BUDGET + crate::city::SECRET_PAGES),
                     ..wgpu::Limits::default()
                 }
                     .using_resolution(adapter.limits()),
@@ -263,7 +263,7 @@ impl Renderer {
         });
         let inst_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("instances"),
-            size: (std::mem::size_of::<Instance>() * MAX_ENTRIES) as u64,
+            size: (std::mem::size_of::<Instance>() * (MAX_ENTRIES + 1)) as u64, // +1: the hidden garbage tower
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
@@ -735,6 +735,10 @@ impl Renderer {
     }
 
     pub fn upload_face(&self, layer: u32, mips: &[u8]) {
+        if layer >= self.face_capacity {
+            log::warn!("face page {layer} past the texture ({}): skipped", self.face_capacity);
+            return;
+        }
         let mut off = 0usize;
         for level in 0..MIP_LEVELS {
             let (w, h) = mip_size(level);

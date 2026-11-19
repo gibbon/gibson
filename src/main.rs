@@ -254,8 +254,8 @@ impl Running {
                 }
             }
         }
-        let city = City::build(entries, self.renderer.max_face_layers);
-        self.renderer.reserve_face_layers(city.layers() + 4); // +4: room for a hidden tower
+        let city = City::build(entries, self.renderer.max_face_layers.saturating_sub(city::SECRET_PAGES));
+        self.renderer.reserve_face_layers(city.layers() + city::SECRET_PAGES); // room for a hidden tower
         self.pending.clear();
         self.clips.clear();
         self.clip_loading.clear();

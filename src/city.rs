@@ -5,6 +5,7 @@ use glam::{Vec2, Vec3};
 
 pub const CELL: f32 = 26.0; // tower spacing; streets run along the cell boundaries
 pub const LAYER_BUDGET: u32 = 768; // face pages per city (~0.7 MB of GPU memory each)
+pub const SECRET_PAGES: u32 = 4; // kept spare past the budget for the hidden garbage tower
 // Rough content per page, used to reserve pages (baking stops early if content runs out).
 const LINES_PER_PAGE: usize = 80;
 const HEX_BYTES_PER_PAGE: usize = 600;
@@ -201,7 +202,7 @@ impl City {
             size,
             seed: 66.6,
             first_layer,
-            max_pages: 4,
+            max_pages: SECRET_PAGES,
             pages: 0,
             layer: None,
             appear: 0.0,
