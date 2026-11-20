@@ -13,6 +13,41 @@ pub fn path() -> PathBuf {
     PathBuf::from("\u{0}gibson-hidden\u{0}garbage")
 }
 
+/// Opening the garbage file: the city glitches red while a copy bar fills, then it
+/// all settles. Seconds since it started -> what to show.
+pub const BREACH: f32 = 0.7; // glitch surges in
+pub const COPIED: f32 = 6.7; // bar full
+pub const END: f32 = 9.5; // all calm again
+
+/// How strongly the screen and towers glitch (0..1).
+pub fn alarm(t: f32) -> f32 {
+    if t < BREACH {
+        (t / BREACH).sqrt()
+    } else if t < COPIED {
+        // Holds high, with a surge every couple of seconds.
+        0.6 + 0.4 * ((t - BREACH) * 1.7).sin().max(0.0).powi(6)
+    } else {
+        let k = ((t - COPIED) / (END - COPIED)).clamp(0.0, 1.0);
+        0.85 * (1.0 - k) * (1.0 - k)
+    }
+}
+
+/// Copy progress 0..1: in uneven steps, with a stall around 40%.
+pub fn progress(t: f32) -> f32 {
+    let x = ((t - BREACH) / (COPIED - BREACH)).clamp(0.0, 1.0);
+    if x >= 1.0 {
+        return 1.0;
+    }
+    let p = if x < 0.38 {
+        x
+    } else if x < 0.5 {
+        0.38 + (x - 0.38) * 0.15 // stalled
+    } else {
+        0.398 + (x - 0.5) / 0.5 * (1.0 - 0.398)
+    };
+    ((p * 60.0).floor() / 60.0).min(0.999)
+}
+
 pub fn entry() -> Entry {
     let mut rng = Rng(0x6A7B_A6E5);
     let ops = ["MOV", "XOR", "JMP", "CALL", "PUSH", "POP", "CMP", "JNZ", "SHR", "ADD", "LEA", "INT"];

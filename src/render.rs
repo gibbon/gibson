@@ -80,6 +80,7 @@ struct Instance {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PostParams {
     texel: [f32; 4],
+    fx: [f32; 4], // x = alarm (the garbage file's glitch), 0 = calm
 }
 
 struct Target {
@@ -111,6 +112,7 @@ pub struct Renderer {
     pub max_face_layers: u32,
     pub tower_fx: u32, // effect on tower previews (same list as the viewer)
     pub theme: usize,  // colour scheme (theme::THEMES)
+    pub alarm: f32,    // 0..1: the garbage file's red glitch over everything
     box_vb: wgpu::Buffer,
     inst_buf: wgpu::Buffer,
 
@@ -554,6 +556,7 @@ impl Renderer {
             max_face_layers,
             tower_fx: 1,
             theme: 0,
+            alarm: 0.0,
             box_vb,
             inst_buf,
             floor_pipe,
@@ -802,6 +805,7 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&PostParams {
                 texel: [1.0 / self.hdr.w as f32, 1.0 / self.hdr.h as f32, th.bloom, time],
+                fx: [self.alarm, 0.0, 0.0, 0.0],
             }),
         );
 
@@ -811,7 +815,7 @@ impl Renderer {
             let mut order: Vec<usize> = (0..c.towers.len()).filter(|&i| c.towers[i].layer.is_some() && c.towers[i].shown > 0.01).collect();
             let dist = |i: usize| (c.towers[i].base + glam::Vec3::Y * c.towers[i].size.y * 0.5).distance_squared(cam);
             order.sort_by(|&a, &b| dist(b).total_cmp(&dist(a)));
-            instances = order.iter().map(|&i| instance_of(&c.towers[i], th)).collect();
+            instances = order.iter().map(|&i| instance_of(&c.towers[i], th, self.alarm, time)).collect();
             if !instances.is_empty() {
                 self.queue.write_buffer(&self.inst_buf, 0, bytemuck::cast_slice(&instances));
             }
@@ -994,7 +998,7 @@ fn bind_faces(
     })
 }
 
-fn instance_of(t: &crate::city::Tower, th: &crate::theme::Theme) -> Instance {
+fn instance_of(t: &crate::city::Tower, th: &crate::theme::Theme, alarm: f32, time: f32) -> Instance {
     // Text colour by kind (HDR multiplier applied in the shader); bodies are deep tints.
     let (text, body) = match t.kind {
         Kind::Folder => ([0.28, 0.91, 1.0], [0.055, 0.165, 0.415]),
@@ -1020,6 +1024,15 @@ fn instance_of(t: &crate::city::Tower, th: &crate::theme::Theme) -> Instance {
     let body = body.map(|c| c * (1.0 - 0.6 * t.dim));
     // The hidden garbage file: blood red, whatever the theme.
     let (text, body) = if t.secret { ([1.0, 0.12, 0.08].map(|c| c * 1.5), [0.16, 0.0, 0.02]) } else { (text, body) };
+    // The garbage file's alarm: towers flicker red, each on its own beat.
+    let (text, body) = if alarm > 0.001 {
+        let tick = (time * 9.0 + t.seed * 3.1).floor();
+        let n = ((tick * 12.9898 + t.seed * 78.233).sin() * 43758.547).fract().abs();
+        let red = alarm * if n > 0.45 { 1.0 } else { 0.3 };
+        (mix(text, [1.4, 0.12, 0.08], red), mix(body, [0.2, 0.0, 0.02], red))
+    } else {
+        (text, body)
+    };
     let ease = t.appear * t.appear * (3.0 - 2.0 * t.appear);
     // Filtered out: sinks into the floor and fades.
     let shown = t.shown.clamp(0.0, 1.0);
@@ -1137,7 +1150,7 @@ impl PostCtx<'_> {
     fn pass(&self, src: &Target, z: f32, bloom: Option<&wgpu::TextureView>) -> PostPass {
         let params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("post params"),
-            contents: bytemuck::bytes_of(&PostParams { texel: [1.0 / src.w as f32, 1.0 / src.h as f32, z, 0.0] }),
+            contents: bytemuck::bytes_of(&PostParams { texel: [1.0 / src.w as f32, 1.0 / src.h as f32, z, 0.0], fx: [0.0; 4] }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {

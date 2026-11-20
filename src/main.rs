@@ -108,6 +108,7 @@ struct Running {
     view_on_load: Option<PathBuf>, // started with a file: view it once its folder is up
     autofly: Option<autofly::AutoFly>, // flying itself down the streets (P)
     music: Option<audio::Audio>,       // the soundtrack, playing (N)
+    hack: Option<Instant>,             // opening the garbage file: the copy sequence, since
     search: Option<String>,  // search box open, with its text
     matches: Vec<f32>,       // per tower: 1 name matches, 0.5 something inside it does
     match_order: Vec<usize>, // matching towers, best and nearest first (Enter walks it)
@@ -886,7 +887,14 @@ impl Running {
         let t = &city.towers[i];
         if t.secret {
             self.fly_to(i);
-            self.say("THE GARBAGE FILE WON'T OPEN", true);
+            if self.hack.is_none() {
+                self.hack = Some(Instant::now());
+                if self.music.is_none() && self.settings.music.is_some() {
+                    self.start_music();
+                }
+                self.message = None;
+                log::info!("copying the garbage file");
+            }
             return;
         }
         if !t.entry.is_dir {
@@ -1035,6 +1043,15 @@ impl Running {
         let t1 = Instant::now();
         self.update_hud(w, h);
         let t_hud = t1.elapsed();
+        self.renderer.alarm = match self.hack {
+            Some(since) if since.elapsed().as_secs_f32() < garbage::END => garbage::alarm(since.elapsed().as_secs_f32()),
+            Some(_) => {
+                self.hack = None;
+                self.say("GARBAGE COPIED", true);
+                0.0
+            }
+            None => 0.0,
+        };
         self.renderer.render(view_proj, self.camera.pos, time, self.city.as_ref(), hl, vd);
         let total = t0.elapsed();
         if total > Duration::from_millis(40) {
@@ -1135,6 +1152,10 @@ impl Running {
             status,
             warn,
             hot: self.hot,
+            hack: self.hack.map(|since| {
+                let t = since.elapsed().as_secs_f32();
+                (garbage::progress(t), t >= garbage::COPIED, (t * 3.0) as u32 % 2 == 0)
+            }),
         };
         // Hover changes every frame while flying past names: cap the redraw rate.
         if self.hud_drawn.elapsed() < HUD_MIN_INTERVAL && self.hud.w == w && self.hud.h == h {
@@ -1246,6 +1267,7 @@ impl ApplicationHandler for App {
             view_on_load: None,
             autofly: None,
             music: None,
+            hack: None,
             search: None,
             matches: Vec::new(),
             match_order: Vec::new(),
@@ -1307,6 +1329,7 @@ impl ApplicationHandler for App {
                                 KeyCode::Escape => {
                                     s.selected = None;
                                     s.autofly = None;
+                                    s.hack = None;
                                 }
                                 KeyCode::F1 if !event.repeat => s.help = !s.help,
                                 KeyCode::Slash

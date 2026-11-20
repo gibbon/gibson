@@ -3,6 +3,7 @@
 
 struct Post {
     texel: vec4<f32>,   // source texel size xy; z = threshold / strength; w = time
+    fx: vec4<f32>,      // x = alarm: the garbage file's red glitch (0 = calm)
 };
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
@@ -78,10 +79,34 @@ fn aces(x: vec3<f32>) -> vec3<f32> {
 
 @fragment
 fn fs_composite(i: VOut) -> @location(0) vec4<f32> {
-    let scene = textureSample(src, samp, i.uv).rgb;
-    let glow = textureSample(bloom, samp, i.uv).rgb;
+    let a = pp.fx.x;
+    let t = pp.texel.w;
+    let tick = floor(t * 14.0);
+    let jolt = fract(sin(tick * 3.71 + 0.3) * 9631.13);
+    var uv = i.uv;
+    if (a > 0.001) {
+        // Torn bands sliding sideways, and now and then the whole frame jumps.
+        let band = floor(uv.y * 46.0);
+        let r = fract(sin(band * 12.9898 + tick * 78.233) * 43758.5453);
+        uv.x += step(1.0 - 0.3 * a, r) * (r - 0.5) * 0.09 * a;
+        uv.y += step(0.9, jolt) * (jolt - 0.95) * 0.25 * a;
+    }
+    // Colour fringes pull apart with the alarm.
+    let split = vec2<f32>(0.007 * a, 0.0);
+    let scene = vec3<f32>(
+        textureSample(src, samp, uv + split).r,
+        textureSample(src, samp, uv).g,
+        textureSample(src, samp, uv - split).b,
+    );
+    let glow = textureSample(bloom, samp, uv).rgb;
     var c = scene + glow * pp.texel.z;
     c = aces(c * 0.8);
+    if (a > 0.001) {
+        let lum = dot(c, vec3(0.3, 0.55, 0.15));
+        c = mix(c, vec3(lum * 1.5, lum * 0.22, lum * 0.18), 0.5 * a);
+        c *= 1.0 - 0.18 * a * (0.5 + 0.5 * sin(i.clip.y * 2.2 + t * 40.0));
+        c += vec3(0.3, 0.0, 0.02) * a * step(0.96, jolt);
+    }
     // Vignette and a little film grain.
     let v = i.uv - 0.5;
     c *= 1.0 - dot(v, v) * 0.55;

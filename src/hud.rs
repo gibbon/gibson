@@ -87,6 +87,7 @@ pub struct HudState {
     pub status: String,
     pub warn: bool,     // status is an error
     pub hot: Option<usize>, // index into `hits` under the cursor
+    pub hack: Option<(f32, bool, bool)>, // garbage file copying: progress, done, blink
 }
 
 pub struct Hud {
@@ -428,9 +429,70 @@ impl Hud {
             }
         }
 
+        if let Some((p, done, blink)) = st.hack {
+            self.hack_panel(p, done, blink, fonts);
+        }
+
         self.help_open = st.help;
         if st.help {
             self.help_panel(fonts);
+        }
+    }
+
+    /// Opening the garbage file: a copy bar, and a log of what it's doing.
+    fn hack_panel(&mut self, p: f32, done: bool, blink: bool, fonts: &Fonts) {
+        const RED: [f32; 3] = [1.0, 0.22, 0.16];
+        const TOTAL: u64 = 6_660_000;
+        let s = self.scale;
+        let u = |v: f32| (v * s).round() as i32;
+        let (w, h) = (self.w as i32, self.h as i32);
+        let pw = u(620.0).min(w - u(24.0));
+        let ph = u(250.0);
+        let r = Rect { x: (w - pw) / 2, y: (h - ph) / 2, w: pw, h: ph };
+        self.fill(r, [0.04, 0.0, 0.005], 0.88);
+        self.frame(r, RED, 0.95);
+        self.fill(Rect { x: r.x, y: r.y, w: r.w, h: u(3.0) }, RED, 0.95);
+        let x = (r.x + u(24.0)) as f32;
+        let title = if done { "FILE COPIED" } else { "COPYING  GARBAGE" };
+        if !done || blink {
+            self.text(&fonts.wide, 24.0 * s, x, (r.y + u(44.0)) as f32, title, RED, 1.0);
+        }
+        // The bar: segmented, like an old terminal's.
+        let bar = Rect { x: r.x + u(24.0), y: r.y + u(66.0), w: r.w - u(48.0), h: u(24.0) };
+        self.frame(bar, RED, 0.9);
+        let segs = 40;
+        let sw = (bar.w - u(6.0)) / segs;
+        let lit = (p * segs as f32).round() as i32;
+        for k in 0..lit {
+            self.fill(Rect { x: bar.x + u(3.0) + k * sw, y: bar.y + u(4.0), w: (sw - u(2.0)).max(1), h: bar.h - u(8.0) }, RED, 0.9);
+        }
+        let bytes = (p as f64 * TOTAL as f64) as u64;
+        let line = format!("{} / {} BYTES   {:>3}%", grouped(bytes), grouped(TOTAL), (p * 100.0).floor() as u32);
+        let mono = 14.0 * s;
+        self.text(&fonts.mono, mono, x, (bar.y + bar.h + u(24.0)) as f32, &line, RED, 0.95);
+        // A log of the copy: lines appear as it goes.
+        const LOG: [&str; 9] = [
+            "> HIDDEN SEGMENT 7F00 OPENED",
+            "> TRACE ROUTE MASKED",
+            "> READING 7F00:0000 .. 7F1A:FFFF",
+            "> CHECKSUM MISMATCH, RETRYING",
+            "> BLOCKS 0-511 OK",
+            "> ALARM ON NODE 0x7731 IGNORED",
+            "> BLOCKS 512-1023 OK",
+            "> WRITING COPY TO LOCAL MEMORY",
+            "> LOG ENTRIES ERASED",
+        ];
+        let shown = if done { LOG.len() } else { ((p * LOG.len() as f32) as usize + 1).min(LOG.len()) };
+        let small = 13.0 * s;
+        let first = shown.saturating_sub(4);
+        for (k, l) in LOG[first..shown].iter().enumerate() {
+            let y = bar.y + bar.h + u(52.0) + k as i32 * u(19.0);
+            self.text(&fonts.mono, small, x, y as f32, l, RED, if first + k + 1 == shown { 0.95 } else { 0.55 });
+        }
+        if done {
+            let t = "6,660,000 BYTES TAKEN.  NO TRACE LEFT.";
+            let tw = text_width(&fonts.mono, small, t);
+            self.text(&fonts.mono, small, (r.x + r.w) as f32 - tw - 24.0 * s, (r.y + r.h - u(18.0)) as f32, t, RED, 0.9);
         }
     }
 
@@ -741,6 +803,18 @@ fn shorten(font: &Font, px: f32, text: &str, max_w: f32) -> String {
         v.pop();
     }
     v.into_iter().collect::<String>() + "…"
+}
+
+fn grouped(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::new();
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 fn small_px(scale: f32) -> f32 {
