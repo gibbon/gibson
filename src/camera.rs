@@ -107,7 +107,10 @@ impl Camera {
         // Velocity: quick to build up, long glide when you let go.
         let fwd = self.forward();
         let right = fwd.cross(Vec3::Y).normalize_or_zero();
-        let speed = self.speed * if input.boost { 4.0 } else { 1.0 };
+        // Faster the higher you are, so the ground seems to pass at the same pace:
+        // up over the roofs, the same speed would feel like crawling.
+        let height = 1.0 + (self.pos.y - 14.0).max(0.0) / 25.0;
+        let speed = self.speed * height * if input.boost { 4.0 } else { 1.0 };
         let wish = fwd * input.forward + right * input.right + Vec3::Y * input.up;
         let mut target = wish * speed;
         let mut rate = if wish.length_squared() > 0.0 { ACCEL } else { GLIDE };
