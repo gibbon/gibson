@@ -88,6 +88,7 @@ pub struct HudState {
     pub warn: bool,     // status is an error
     pub hot: Option<usize>, // index into `hits` under the cursor
     pub hack: Option<(f32, bool, bool)>, // garbage file copying: progress, done, blink
+    pub dwell: Option<(String, f32)>,    // inside a folder tower: its name, 0..1 until it opens
 }
 
 pub struct Hud {
@@ -429,6 +430,10 @@ impl Hud {
             }
         }
 
+        if let Some((name, p)) = &st.dwell {
+            self.dwell_meter(name, *p, fonts);
+        }
+
         if let Some((p, done, blink)) = st.hack {
             self.hack_panel(p, done, blink, fonts);
         }
@@ -437,6 +442,29 @@ impl Hud {
         if st.help {
             self.help_panel(fonts);
         }
+    }
+
+    /// Inside a folder tower: "ENTERING NAME" and a bar filling until it opens.
+    fn dwell_meter(&mut self, name: &str, p: f32, fonts: &Fonts) {
+        let s = self.scale;
+        let u = |v: f32| (v * s).round() as i32;
+        let (w, h) = (self.w as i32, self.h as i32);
+        let px = 18.0 * s;
+        let label = shorten(&fonts.wide, px, &format!("ENTERING  {}", name.to_uppercase()), (w - u(80.0)) as f32);
+        let tw = text_width(&fonts.wide, px, &label) as i32;
+        let bw = tw.max(u(260.0));
+        let y = h / 2 + u(60.0);
+        let plate = Rect { x: (w - bw) / 2 - u(18.0), y: y - u(30.0), w: bw + u(36.0), h: u(78.0) };
+        self.fill(plate, [0.0, 0.012, 0.035], 0.85);
+        self.frame(plate, CYAN, 0.6);
+        self.text(&fonts.wide, px, ((w - tw) / 2) as f32, y as f32, &label, CYAN, 1.0);
+        let bar = Rect { x: (w - bw) / 2, y: y + u(12.0), w: bw, h: u(6.0) };
+        self.fill(bar, [0.0, 0.02, 0.05], 0.7);
+        self.frame(bar, CYAN, 0.7);
+        self.fill(Rect { x: bar.x, y: bar.y, w: (bar.w as f32 * p) as i32, h: bar.h }, CYAN, 0.95);
+        let hint = "FLY ON THROUGH TO SKIP";
+        let hw = text_width(&fonts.mono, 12.0 * s, hint) as i32;
+        self.text(&fonts.mono, 12.0 * s, ((w - hw) / 2) as f32, (bar.y + u(24.0)) as f32, hint, CYAN, 0.7);
     }
 
     /// Opening the garbage file: a copy bar, and a log of what it's doing.
@@ -774,7 +802,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("BACKSPACE", "up to the parent folder"),
         ("ALT + LEFT  /  MOUSE BACK", "back to the previous folder"),
         ("TOP BAR", "click a drive or part of the path"),
-        ("FLY INTO A FOLDER", "opens it"),
+        ("FLY INTO A FOLDER", "stay inside a moment: opens it"),
     ]),
     ("SEARCH", &[
         ("/  OR  CTRL + F", "search this folder by name"),

@@ -13,7 +13,7 @@ the film.
 - **Pictures and videos** play on their towers as glitching holograms, and open
   in a full-screen player with sound and switchable effects (hologram, CRT,
   thermal, data mosaic, edge glow).
-- **Navigate**: click a tower to fly to it, fly into a folder to enter it,
+- **Navigate**: click a tower to fly to it, fly into a folder and stay a moment to enter it,
   search, filter by file type, go back and up.
 
 Press **?** (or F1) in the app for every key.

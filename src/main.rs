@@ -54,6 +54,7 @@ enum Msg {
     Drives(Vec<PathBuf>),
 }
 
+const DWELL_TO_ENTER: f32 = 1.0; // seconds inside a folder tower (flying by hand) before it opens
 const PAGE_UPLOADS_PER_FRAME: usize = 8; // ~6 MB per frame: big folders load without hitches
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const CLICK_SLOP: f64 = 5.0; // pixels the mouse may move and still count as a click
@@ -98,6 +99,7 @@ struct Running {
     hot: Option<usize>,          // HUD button under the cursor
     last_click: Option<(Instant, usize, Option<usize>)>, // when, tower, name
     entering: Option<usize>, // tower we're flying into
+    dwell: Option<(usize, f32)>, // flown into a folder by hand: which, and seconds inside
     help: bool,              // hotkey panel open
     filter: Vec<filetype::Cat>, // file types shown (empty = all)
     search_filter: bool,     // search hides non-matches (live) instead of dimming
@@ -913,8 +915,9 @@ impl Running {
     }
 
     /// Opens a folder once the camera is inside its tower (flown in, or by autopilot).
-    fn check_entered(&mut self) {
+    fn check_entered(&mut self, dt: f32) {
         if self.loading.is_some() || self.viewer.is_some() {
+            self.dwell = None;
             return;
         }
         let Some(city) = &self.city else { return };
@@ -930,11 +933,33 @@ impl Running {
             .iter()
             .enumerate()
             .position(|(i, t)| can_open(i) && t.entry.is_dir && t.layer.is_some() && nav::inside(t, pos));
-        if let Some(i) = inside {
-            let path = city.towers[i].entry.path.clone();
-            self.load(path, false);
-        } else if self.camera.autopilot.is_none() {
-            self.entering = None;
+        // Asked to go in (double-click / Enter): opens on arrival. Flown in by hand:
+        // only after staying inside a moment, so brushing through a tower doesn't.
+        match inside {
+            Some(i) if self.entering == Some(i) => {
+                self.dwell = None;
+                let path = city.towers[i].entry.path.clone();
+                self.load(path, false);
+            }
+            Some(i) => {
+                let held = match self.dwell {
+                    Some((j, t)) if j == i => t + dt,
+                    _ => 0.0,
+                };
+                if held >= DWELL_TO_ENTER {
+                    self.dwell = None;
+                    let path = city.towers[i].entry.path.clone();
+                    self.load(path, false);
+                } else {
+                    self.dwell = Some((i, held));
+                }
+            }
+            None => {
+                self.dwell = None;
+                if self.camera.autopilot.is_none() {
+                    self.entering = None;
+                }
+            }
         }
     }
 
@@ -971,7 +996,7 @@ impl Running {
             }
             _ => {
                 self.camera.update(&input, dt);
-                self.check_entered();
+                self.check_entered(dt);
             }
         }
 
@@ -1152,6 +1177,10 @@ impl Running {
             status,
             warn,
             hot: self.hot,
+            dwell: match (&self.city, self.dwell) {
+                (Some(c), Some((i, t))) if t > 0.08 => Some((c.towers[i].entry.name.clone(), (t / DWELL_TO_ENTER).min(1.0))),
+                _ => None,
+            },
             hack: self.hack.map(|since| {
                 let t = since.elapsed().as_secs_f32();
                 (garbage::progress(t), t >= garbage::COPIED, (t * 3.0) as u32 % 2 == 0)
@@ -1257,6 +1286,7 @@ impl ApplicationHandler for App {
             hot: None,
             last_click: None,
             entering: None,
+            dwell: None,
             help: false,
             filter: Vec::new(),
             search_filter: false,
