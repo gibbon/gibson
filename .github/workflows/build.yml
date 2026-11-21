@@ -26,7 +26,9 @@ jobs:
           path: ffmpeg-out
           key: ffmpeg-windows-${{ hashFiles('packaging/ffmpeg/build.sh') }}
       - if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update -q
           sudo apt-get install -y -q mingw-w64 nasm
           bash packaging/ffmpeg/build.sh windows-x86_64 ffmpeg-out
@@ -45,7 +47,9 @@ jobs:
           path: ffmpeg-out
           key: ffmpeg-macos-${{ hashFiles('packaging/ffmpeg/build.sh') }}
       - if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
         run: |
+          set -euo pipefail
           brew install nasm
           bash packaging/ffmpeg/build.sh macos-arm64 ff-arm64
           bash packaging/ffmpeg/build.sh macos-x86_64 ff-x86_64

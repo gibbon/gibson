@@ -52,7 +52,8 @@ macos-arm64 | macos-x86_64)
     if [ "$arch" != "$(uname -m)" ]; then
         cross=(--enable-cross-compile --target-os=darwin)
     fi
-    ./configure "${common[@]}" "${cross[@]}" \
+    # (${cross[@]+...}: macOS's bash 3.2 calls an empty array unbound under set -u)
+    ./configure "${common[@]}" ${cross[@]+"${cross[@]}"} \
         --arch="$arch" --cc="clang -arch $arch" \
         --extra-cflags="$min" --extra-ldflags="$min" \
         --enable-pthreads --enable-zlib
@@ -64,7 +65,7 @@ macos-arm64 | macos-x86_64)
     ;;
 esac
 
-make -j"$jobs" ffmpeg >/dev/null
+make -j"$jobs" "$exe" >/dev/null
 cp "$exe" "$out/$exe"
 cp COPYING.LGPLv2.1 "$out/"
 cp "$work/$tarball" "$out/"
