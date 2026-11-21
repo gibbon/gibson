@@ -100,7 +100,14 @@ Milestone 1 committed (968ee10). Git identity is set globally.
 - Private repo github.com/gibbon/gibson (MIT). GitHub Actions
   (.github/workflows/build.yml) builds Gibson-windows.zip (windowed exe with
   icon) and Gibson-macos.zip (universal, ad-hoc signed .app) on every push;
-  a `v*` tag publishes a Release. v0.1.0 released 2026-11-19.
+  a `v*` tag publishes a Release. v0.1.0 released 2026-11-19; v0.2.0
+  2026-11-21.
+- Since v0.2.0 each platform also has a `-full` zip carrying a slim FFmpeg 9.1
+  (packaging/ffmpeg/build.sh: LGPL, static, decode-only, no external libs;
+  ~21 MB exe on Windows, universal on macOS), built in CI and cached by the
+  script's hash; the release attaches ffmpeg-9.1.tar.xz for the LGPL. Gibson
+  runs an ffmpeg next to its own exe first, then Homebrew's, then PATH; it no
+  longer uses ffprobe. Known gap: no AV1 software decoder (would need dav1d).
 - macOS build compiles in CI but has not yet been run on a real Mac: the
   user will try it and report (Retina, trackpad, Cmd keys, sound, ffmpeg
   found via /opt/homebrew/bin).
