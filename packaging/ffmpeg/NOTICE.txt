@@ -1,0 +1,18 @@
+FFmpeg
+======
+
+This download includes a copy of FFmpeg (https://ffmpeg.org), which Gibson runs
+to decode video and sound. FFmpeg is a separate program, not part of Gibson.
+
+- Version: FFmpeg 9.1, unmodified source, built as a slim decode-only program
+  (see packaging/ffmpeg/build.sh in Gibson's repository for the exact options).
+- Licence: GNU Lesser General Public License, version 2.1 or later. The licence
+  text is included (COPYING.LGPLv2.1).
+- Source code: the exact source used (ffmpeg-9.1.tar.xz) is published with each
+  Gibson release, next to these downloads. It is also available from
+  https://ffmpeg.org/releases/ffmpeg-9.1.tar.xz
+- You may replace this ffmpeg with any other build: put it in the same place
+  (next to gibson.exe, or inside Gibson.app/Contents/MacOS), or delete it to use
+  the one installed on your system instead.
+
+FFmpeg is a trademark of Fabrice Bellard, originator of the FFmpeg project.

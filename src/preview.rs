@@ -3,7 +3,7 @@
 // decoded by the FFmpeg command-line tool when it's installed.
 
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
@@ -121,21 +121,10 @@ pub fn have_ffmpeg() -> bool {
     })
 }
 
-/// An FFmpeg-suite command (`ffmpeg`, `ffprobe`) that doesn't flash a console
-/// window. Apps started from Finder don't get the shell's PATH, so on macOS look in
-/// Homebrew's and MacPorts' folders too.
+/// An `ffmpeg` command that doesn't flash a console window.
 pub fn tool(name: &str) -> Command {
-    let mut program = std::path::PathBuf::from(name);
-    if cfg!(target_os = "macos") {
-        for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] {
-            let p = Path::new(dir).join(name);
-            if p.exists() {
-                program = p;
-                break;
-            }
-        }
-    }
-    let mut c = Command::new(program);
+    debug_assert_eq!(name, "ffmpeg");
+    let mut c = Command::new(ffmpeg_path());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -144,16 +133,113 @@ pub fn tool(name: &str) -> Command {
     c
 }
 
-/// The video's length in seconds (ffprobe), if it can tell.
+/// The video's length in seconds, if ffmpeg can tell.
 fn duration(p: &Path) -> Option<f32> {
-    let out = tool("ffprobe")
-        .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1"])
-        .arg(p)
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    String::from_utf8_lossy(&out.stdout).trim().parse::<f32>().ok().filter(|d| d.is_finite() && *d > 0.0)
+    probe(p).duration
 }
+
+static FFMPEG_PATH: OnceLock<PathBuf> = OnceLock::new();
+
+/// Which ffmpeg to run (found once). First one bundled next to Gibson (the "full"
+/// downloads), if it runs on this machine; then, on macOS, Homebrew's and MacPorts'
+/// folders (apps started from Finder don't get the shell's PATH); then the PATH.
+fn ffmpeg_path() -> PathBuf {
+    FFMPEG_PATH
+        .get_or_init(|| {
+            let exe = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+            let mut candidates: Vec<PathBuf> = Vec::new();
+            if let Some(dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+                candidates.push(dir.join(exe));
+            }
+            if cfg!(target_os = "macos") {
+                for dir in ["/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin"] {
+                    candidates.push(Path::new(dir).join(exe));
+                }
+            }
+            for p in candidates.into_iter().filter(|p| p.is_file()) {
+                if runs(&p) {
+                    log::info!("ffmpeg: {}", p.display());
+                    return p;
+                }
+                log::warn!("ffmpeg at {} doesn't run here: skipped", p.display());
+            }
+            PathBuf::from(exe)
+        })
+        .clone()
+}
+
+fn runs(p: &Path) -> bool {
+    let mut c = Command::new(p);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    c.arg("-version").stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
+}
+
+/// What ffmpeg says about a media file: picture size, length, and whether it has
+/// sound. (`ffmpeg -i` with no output prints this and stops.)
+#[derive(Default, Debug)]
+pub struct Probe {
+    pub size: Option<(u32, u32)>,
+    pub duration: Option<f32>,
+    pub audio: bool,
+}
+
+pub fn probe(p: &Path) -> Probe {
+    let Ok(out) = tool("ffmpeg").args(["-hide_banner", "-nostdin", "-i"]).arg(p).stdout(Stdio::null()).output() else {
+        return Probe::default();
+    };
+    parse_probe(&String::from_utf8_lossy(&out.stderr))
+}
+
+fn parse_probe(text: &str) -> Probe {
+    let mut pr = Probe::default();
+    for line in text.lines().map(str::trim) {
+        if let Some(rest) = line.strip_prefix("Duration:") {
+            let hms = rest.split(',').next().unwrap_or("").trim();
+            let parts: Vec<f32> = hms.split(':').filter_map(|v| v.parse().ok()).collect();
+            if parts.len() == 3 {
+                let d = parts[0] * 3600.0 + parts[1] * 60.0 + parts[2];
+                pr.duration = (d.is_finite() && d > 0.0).then_some(d);
+            }
+        } else if line.starts_with("Stream #") {
+            if line.contains(": Audio:") {
+                pr.audio = true;
+            } else if let Some(v) = line.split(": Video:").nth(1) {
+                if pr.size.is_none() {
+                    // e.g. "h264 (High) (avc1 / 0x31637661), yuv420p, 1920x1080 [SAR 1:1 DAR 16:9], ..."
+                    pr.size = v.split([' ', ',']).find_map(|tok| {
+                        let (w, h) = tok.split_once('x')?;
+                        if w.len() < 2 || !w.bytes().all(|b| b.is_ascii_digit()) || !h.bytes().all(|b| b.is_ascii_digit()) {
+                            return None;
+                        }
+                        Some((w.parse().ok()?, h.parse().ok()?)).filter(|&(w, h): &(u32, u32)| w >= 8 && h >= 8)
+                    });
+                }
+            }
+        }
+    }
+    pr
+}
+
+#[cfg(test)]
+mod probe_tests {
+    #[test]
+    fn parses_ffmpeg_info() {
+        let t = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from 'a.mp4':\n  Duration: 00:03:21.45, start: 0.000000, bitrate: 1200 kb/s\n  Stream #0:0[0x1](und): Video: h264 (High) (avc1 / 0x31637661), yuv420p(tv, bt709, progressive), 1920x1080 [SAR 1:1 DAR 16:9], 1000 kb/s, 25 fps\n  Stream #0:1[0x2](und): Audio: aac (LC) (mp4a / 0x6134706D), 48000 Hz, stereo, fltp, 128 kb/s\nAt least one output file must be specified\n";
+        let p = super::parse_probe(t);
+        assert_eq!(p.size, Some((1920, 1080)));
+        assert!((p.duration.unwrap() - 201.45).abs() < 0.01);
+        assert!(p.audio);
+        let silent = super::parse_probe("  Duration: N/A, bitrate: N/A\n    Stream #0:0: Video: gif, bgra, 480x270, 10 fps\n");
+        assert_eq!(silent.size, Some((480, 270)));
+        assert_eq!(silent.duration, None);
+        assert!(!silent.audio);
+    }
+}
+
 
 /// Decodes `secs` of video from `seek` (or one frame if `secs` is None), scaled to
 /// PV wide and at most PV tall, as raw RGBA.

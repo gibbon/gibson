@@ -1,5 +1,8 @@
-# Builds Gibson for Windows (.exe) and macOS (universal .app) on every push.
-# Pushing a tag like v0.1.0 also publishes both as a GitHub Release.
+# Builds Gibson for Windows (.exe) and macOS (universal .app) on every push, each
+# twice: a small download that uses an installed FFmpeg, and a "full" one carrying
+# its own slim FFmpeg (built here from source, cached between runs).
+# Pushing a tag like v0.2.0 also publishes them all as a GitHub Release, with the
+# FFmpeg source tarball alongside (as its LGPL licence asks).
 name: build
 
 on:
@@ -13,25 +16,84 @@ permissions:
   contents: write
 
 jobs:
+  ffmpeg-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-out
+          key: ffmpeg-windows-${{ hashFiles('packaging/ffmpeg/build.sh') }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mingw-w64 nasm
+          bash packaging/ffmpeg/build.sh windows-x86_64 ffmpeg-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-windows
+          path: ffmpeg-out
+
+  ffmpeg-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-out
+          key: ffmpeg-macos-${{ hashFiles('packaging/ffmpeg/build.sh') }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          brew install nasm
+          bash packaging/ffmpeg/build.sh macos-arm64 ff-arm64
+          bash packaging/ffmpeg/build.sh macos-x86_64 ff-x86_64
+          mkdir -p ffmpeg-out
+          lipo -create ff-arm64/ffmpeg ff-x86_64/ffmpeg -output ffmpeg-out/ffmpeg
+          cp ff-arm64/COPYING.LGPLv2.1 ffmpeg-out/
+          lipo -info ffmpeg-out/ffmpeg
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-macos
+          path: ffmpeg-out
+
   windows:
+    needs: ffmpeg-windows
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-windows
+          path: ffmpeg-out
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
           Copy-Item target/release/gibson.exe, README.md, LICENSE dist/
           Compress-Archive -Path dist/* -DestinationPath Gibson-windows.zip
+          # Full: the same, plus ffmpeg.exe next to gibson.exe.
+          ./ffmpeg-out/ffmpeg.exe -hide_banner -version | Select-Object -First 1
+          Copy-Item ffmpeg-out/ffmpeg.exe dist/
+          Copy-Item packaging/ffmpeg/NOTICE.txt dist/FFMPEG-NOTICE.txt
+          Copy-Item ffmpeg-out/COPYING.LGPLv2.1 dist/FFMPEG-COPYING.LGPLv2.1.txt
+          Compress-Archive -Path dist/* -DestinationPath Gibson-windows-full.zip
+          Copy-Item ffmpeg-out/ffmpeg-*.tar.xz .
+          Get-ChildItem *.zip, *.tar.xz | Format-Table Name, Length
       - uses: actions/upload-artifact@v4
         with:
           name: Gibson-windows
-          path: Gibson-windows.zip
+          path: |
+            Gibson-windows.zip
+            Gibson-windows-full.zip
+            ffmpeg-*.tar.xz
 
   macos:
+    needs: ffmpeg-macos
     runs-on: macos-latest
     env:
       MACOSX_DEPLOYMENT_TARGET: "11.0"
@@ -43,11 +105,20 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --locked --target aarch64-apple-darwin
       - run: cargo build --release --locked --target x86_64-apple-darwin
-      - run: bash packaging/macos/make_app.sh
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-macos
+          path: ffmpeg-out
+      - run: |
+          chmod +x ffmpeg-out/ffmpeg
+          ffmpeg-out/ffmpeg -hide_banner -version | head -1
+          bash packaging/macos/make_app.sh
+          FFMPEG=ffmpeg-out bash packaging/macos/make_app.sh
+          ls -la dist/*.zip
       - uses: actions/upload-artifact@v4
         with:
           name: Gibson-macos
-          path: dist/Gibson-macos.zip
+          path: dist/*.zip
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -56,9 +127,12 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
+          pattern: Gibson-*
           path: out
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          files: out/*.zip
+          files: |
+            out/*.zip
+            out/*.tar.xz
           generate_release_notes: true

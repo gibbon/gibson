@@ -109,20 +109,11 @@ fn tool(name: &str) -> Command {
     crate::preview::tool(name)
 }
 
-/// Width, height and length of a video (ffprobe).
+/// Width, height and length of a video.
 fn probe(p: &Path) -> Option<(u32, u32, f32)> {
-    let out = tool("ffprobe")
-        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height:format=duration", "-of", "default=nw=1"])
-        .arg(p)
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let field = |k: &str| text.lines().find_map(|l| l.strip_prefix(k)).map(str::trim);
-    let w = field("width=")?.parse().ok()?;
-    let h = field("height=")?.parse().ok()?;
-    let d = field("duration=").and_then(|d| d.parse().ok()).unwrap_or(0.0);
-    Some((w, h, d))
+    let pr = crate::preview::probe(p);
+    let (w, h) = pr.size?;
+    Some((w, h, pr.duration.unwrap_or(0.0)))
 }
 
 impl Viewer {

@@ -35,14 +35,9 @@ impl Drop for Audio {
     }
 }
 
-/// Does this file have a sound track? (ffprobe)
+/// Does this file have a sound track?
 pub fn has_audio(p: &Path) -> bool {
-    tool("ffprobe")
-        .args(["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=codec_type", "-of", "csv=p=0"])
-        .arg(p)
-        .stderr(Stdio::null())
-        .output()
-        .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).contains("audio"))
+    crate::preview::probe(p).audio
 }
 
 fn tool(name: &str) -> Command {
