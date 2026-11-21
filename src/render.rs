@@ -158,17 +158,33 @@ struct HudTex {
 impl Renderer {
     pub async fn new(window: Arc<Window>) -> Renderer {
         let size = window.inner_size();
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-        let surface = instance.create_surface(window).expect("create surface");
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-                apply_limit_buckets: false,
-            })
-            .await
-            .expect("no GPU adapter");
+        // On Windows, DirectX 12 first: screen recorders (OBS, Game Bar) capture it
+        // reliably, where a Vulkan window can freeze on its first frame. Vulkan if
+        // DX12 isn't there; WGPU_BACKEND=vulkan (etc.) overrides.
+        let mut tries = vec![wgpu::InstanceDescriptor::new_without_display_handle_from_env()];
+        if cfg!(windows) && std::env::var_os("WGPU_BACKEND").is_none() {
+            let mut dx12 = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+            dx12.backends = wgpu::Backends::DX12;
+            tries.insert(0, dx12);
+        }
+        let mut found = None;
+        for desc in tries {
+            let instance = wgpu::Instance::new(desc);
+            let Ok(surface) = instance.create_surface(window.clone()) else { continue };
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                    apply_limit_buckets: false,
+                })
+                .await;
+            if let Ok(adapter) = adapter {
+                found = Some((surface, adapter));
+                break;
+            }
+        }
+        let (surface, adapter) = found.expect("no GPU adapter");
         log::info!("GPU: {:?}", adapter.get_info());
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
