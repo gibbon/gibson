@@ -33,7 +33,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalSize;
+use winit::dpi::{LogicalSize, PhysicalSize};
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -129,6 +129,7 @@ struct Running {
 struct App {
     start_path: PathBuf,
     start_file: Option<PathBuf>, // given a file: open its folder and view it
+    size: Option<(u32, u32)>,    // --size / window= setting: exact window size in pixels
     state: Option<Running>,
 }
 
@@ -1231,7 +1232,12 @@ impl ApplicationHandler for App {
             let k = (s.width * 0.85 / lw).min(s.height * 0.85 / lh).min(1.0);
             (lw, lh) = (lw * k, lh * k);
         }
-        let attrs = Window::default_attributes().with_title("GIBSON").with_inner_size(LogicalSize::new(lw, lh));
+        let attrs = Window::default_attributes().with_title("GIBSON");
+        // An exact size in pixels if asked for (recording at 1920x1080, say).
+        let attrs = match self.size {
+            Some((w, h)) => attrs.with_inner_size(PhysicalSize::new(w, h)),
+            None => attrs.with_inner_size(LogicalSize::new(lw, lh)),
+        };
         let window = Arc::new(event_loop.create_window(attrs).expect("create window"));
         let renderer = pollster::block_on(render::Renderer::new(window.clone()));
         let (tx, rx) = channel();
@@ -1512,8 +1518,20 @@ fn main() {
         }
     }
     logger.init();
-    let start_path = std::env::args_os()
-        .nth(1)
+    // gibson [--size WxH] [folder or file]
+    let mut args = std::env::args_os().skip(1);
+    let (mut path_arg, mut size) = (None, settings::load().window);
+    while let Some(a) = args.next() {
+        match a.to_str() {
+            Some("--size") => match args.next().and_then(|v| v.to_str().and_then(settings::parse_size)) {
+                Some(s) => size = Some(s),
+                None => log::warn!("--size wants WIDTHxHEIGHT, e.g. --size 1920x1080"),
+            },
+            Some(s) if s.starts_with("--size=") => size = settings::parse_size(&s[7..]).or(size),
+            _ => path_arg = path_arg.or(Some(a)),
+        }
+    }
+    let start_path = path_arg
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
@@ -1529,6 +1547,9 @@ fn main() {
     } else {
         (start_path, None)
     };
-    let mut app = App { start_path, start_file, state: None };
+    if let Some((w, h)) = size {
+        log::info!("window {w}x{h}");
+    }
+    let mut app = App { start_path, start_file, size, state: None };
     event_loop.run_app(&mut app).expect("run");
 }

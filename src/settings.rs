@@ -11,11 +11,12 @@ pub struct Settings {
     pub volume: u32,      // viewer sound, percent
     pub theme: usize,     // colour scheme
     pub music: Option<PathBuf>, // soundtrack (N): any audio file of yours
+    pub window: Option<(u32, u32)>, // window size in pixels (e.g. 1920x1080 for recording)
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { tower_fx: 1, viewer_fx: 1, volume: 80, theme: 0, music: None } // hologram, neon
+        Settings { tower_fx: 1, viewer_fx: 1, volume: 80, theme: 0, music: None, window: None } // hologram, neon
     }
 }
 
@@ -42,6 +43,10 @@ pub fn load() -> Settings {
     let Some(text) = file().and_then(|f| std::fs::read_to_string(f).ok()) else { return s };
     for line in text.lines() {
         let Some((k, v)) = line.split_once('=') else { continue };
+        if k.trim() == "window" {
+            s.window = parse_size(v);
+            continue;
+        }
         if k.trim() == "music" {
             let v = v.trim();
             s.music = (!v.is_empty()).then(|| PathBuf::from(v));
@@ -59,16 +64,25 @@ pub fn load() -> Settings {
     s
 }
 
+/// "1920x1080" (or 1920×1080) -> (1920, 1080), within sensible limits.
+pub fn parse_size(v: &str) -> Option<(u32, u32)> {
+    let (w, h) = v.trim().split_once(['x', 'X', '×'])?;
+    let (w, h) = (w.trim().parse::<u32>().ok()?, h.trim().parse::<u32>().ok()?);
+    ((320..=7680).contains(&w) && (240..=4320).contains(&h)).then_some((w, h))
+}
+
 pub fn save(s: &Settings) {
     let Some(f) = file() else { return };
     let text = format!(
         "# Gibson settings\ntower_fx={}\nviewer_fx={}\nvolume={}\ntheme={}\n\
-         # music: an audio file of yours to play with N (and when hidden things surface)\nmusic={}\n",
+         # music: an audio file of yours to play with N (and when hidden things surface)\nmusic={}\n\
+         # window: size in pixels, e.g. 1920x1080 (empty: fit the screen)\nwindow={}\n",
         s.tower_fx,
         s.viewer_fx,
         s.volume,
         s.theme,
-        s.music.as_ref().map(|p| p.display().to_string()).unwrap_or_default()
+        s.music.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+        s.window.map(|(w, h)| format!("{w}x{h}")).unwrap_or_default()
     );
     let r = f.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&f, text));
     if let Err(e) = r {

@@ -62,7 +62,10 @@ each release. Gibson uses an `ffmpeg` next to itself first, then the system's.
 ```
 gibson D:\Photos              # open a folder
 gibson ~/Movies/clip.mp4      # open a file's folder, with the player on it
+gibson --size 1920x1080       # exact window size in pixels (handy for recording)
 ```
+
+To always open at one size, add `window=1920x1080` to the settings file.
 
 (On macOS the binary is `Gibson.app/Contents/MacOS/gibson`.)
 
