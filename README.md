@@ -7,6 +7,8 @@ circuit-board floor, and you fly through it. Inspired by the look of the
 "Gibson" in *Hackers* (1995). This is an original program, not affiliated with
 the film.
 
+![Gibson: folders as glass towers over a circuit-board floor](assets/screenshot.jpg)
+
 - **Real data on the glass**: every tower shows its folder's contents, a file's
   text, or a hex dump of its bytes; folders show a breakdown of their file types.
 - **Height** is how much is inside, **colour** is the file type.
