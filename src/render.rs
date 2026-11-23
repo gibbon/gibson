@@ -289,11 +289,11 @@ impl Renderer {
         // ── Pipelines ────────────────────────────────────────────────────────
         let floor_mod = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("floor"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/floor.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(concat!(include_str!("shaders/smoke.wgsl"), include_str!("shaders/floor.wgsl")).into()),
         });
         let tower_mod = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("tower"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/tower.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(concat!(include_str!("shaders/smoke.wgsl"), include_str!("shaders/tower.wgsl")).into()),
         });
         let post_mod = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("post"),

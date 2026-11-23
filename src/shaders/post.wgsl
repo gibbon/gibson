@@ -107,10 +107,20 @@ fn fs_composite(i: VOut) -> @location(0) vec4<f32> {
         c *= 1.0 - 0.18 * a * (0.5 + 0.5 * sin(i.clip.y * 2.2 + t * 40.0));
         c += vec3(0.3, 0.0, 0.02) * a * step(0.96, jolt);
     }
-    // Vignette and a little film grain.
+    // Seedier: a touch darker and less saturated, blacks crushed, a cold green
+    // cast in the shadows.
+    let l = dot(c, vec3(0.3, 0.55, 0.15));
+    c = mix(vec3(l), c, 0.85) * 0.88;
+    // (linear light: tiny numbers here are big ones on screen)
+    c = max(c - vec3(0.003), vec3(0.0)) * 1.003;
+    c += vec3(0.0, 0.0012, 0.001) * (1.0 - smoothstep(0.0, 0.1, l));
+    // A heavy vignette: the edges fall away into the dark.
     let v = i.uv - 0.5;
-    c *= 1.0 - dot(v, v) * 0.55;
+    let r = length(v) * 1.414; // 0 centre, 1 corner
+    let vig = smoothstep(0.12, 0.95, r);
+    c *= mix(1.0, 0.04, vig * vig * (3.0 - 2.0 * vig));
+    // Film grain, stronger in the dark.
     let n = fract(sin(dot(i.clip.xy + pp.texel.w * 61.0, vec2(12.9898, 78.233))) * 43758.5453);
-    c += (n - 0.5) * 0.025;
+    c += (n - 0.5) * mix(0.012, 0.03, smoothstep(0.0, 0.4, l));
     return vec4<f32>(max(c, vec3(0.0)), 1.0);
 }

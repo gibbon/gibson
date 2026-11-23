@@ -127,5 +127,8 @@ fn fs(i: VOut) -> @location(0) vec4<f32> {
     let fog = exp(-dist / 230.0);
     col = col * fog + g.haze.rgb * (1.0 - fog) * 0.12 * (1.0 - exp(-dist / 400.0));
     col *= exp(-dist / 1100.0);
+    // Smoke lying on the board.
+    let sm = smoke(i.world, g.cam.xyz, g.cam.w);
+    col = mix(col, smoke_colour(g.haze.rgb, g.th1.rgb, sm.y), sm.x);
     return vec4<f32>(col, 1.0);
 }
