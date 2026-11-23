@@ -103,7 +103,8 @@ Milestone 1 committed (968ee10). Git identity is set globally.
   Gibson-linux-x86_64.tar.gz (built on Ubuntu 22.04: glibc 2.35+) on every
   push; a `v*` tag publishes a Release. v0.1.0 released 2026-11-19; v0.2.0
   2026-11-21; v0.2.2 2026-11-23 (Linux, YouTube soundtrack player); v0.2.3 2026-11-23
-  (LOOK panel, smoke, five-track default music).
+  (LOOK panel, smoke, five-track default music); v0.2.4 2026-11-23 (M music
+  on/off, N next track).
 - LOOK panel (L): sliders in settings::LOOK (keys saved in settings.txt), sent
   to the shaders as Renderer.look: smoke via Globals th2.w / haze.w / screen.zw
   (src/shaders/smoke.wgsl, prepended to floor and tower), the rest via PostParams
