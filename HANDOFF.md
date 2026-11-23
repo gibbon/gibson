@@ -97,11 +97,18 @@ Milestone 1 committed (968ee10). Git identity is set globally.
   Co-Authored-By line).
 
 ## Releases
-- Private repo github.com/gibbon/gibson (MIT). GitHub Actions
+- Public repo github.com/gibbon/gibson (MIT). GitHub Actions
   (.github/workflows/build.yml) builds Gibson-windows.zip (windowed exe with
-  icon) and Gibson-macos.zip (universal, ad-hoc signed .app) on every push;
-  a `v*` tag publishes a Release. v0.1.0 released 2026-11-19; v0.2.0
-  2026-11-21.
+  icon), Gibson-macos.zip (universal, ad-hoc signed .app) and
+  Gibson-linux-x86_64.tar.gz (built on Ubuntu 22.04: glibc 2.35+) on every
+  push; a `v*` tag publishes a Release. v0.1.0 released 2026-11-19; v0.2.0
+  2026-11-21; v0.2.2 2026-11-23 (Linux, YouTube soundtrack player).
+- Music (N): `music=` is a file or a YouTube link; empty plays DEFAULT_MUSIC
+  (src/main.rs). Links play in YouTube's own embedded player in a child web view
+  (wry; src/radio.rs) in the bottom-right corner, with a HUD bezel around it.
+  YouTube's terms: the player stays visible (>= 200x200), unmodified, never
+  rendered into the 3D scene. Linux, missing WebView2, embed errors or 20 s of
+  silence fall back to opening the link in the browser.
 - Since v0.2.0 each platform also has a `-full` zip carrying a slim FFmpeg 9.1
   (packaging/ffmpeg/build.sh: LGPL, static, decode-only, no external libs;
   ~21 MB exe on Windows, universal on macOS), built in CI and cached by the
