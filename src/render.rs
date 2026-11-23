@@ -113,6 +113,7 @@ pub struct Renderer {
     pub tower_fx: u32, // effect on tower previews (same list as the viewer)
     pub theme: usize,  // colour scheme (theme::THEMES)
     pub alarm: f32,    // 0..1: the garbage file's red glitch over everything
+    pub look: [f32; 4], // LOOK panel, 0..1 each: smoke, vignette, darkness, grain
     box_vb: wgpu::Buffer,
     inst_buf: wgpu::Buffer,
 
@@ -573,6 +574,7 @@ impl Renderer {
             tower_fx: 1,
             theme: 0,
             alarm: 0.0,
+            look: [0.5, 0.7, 0.6, 0.5],
             box_vb,
             inst_buf,
             floor_pipe,
@@ -812,7 +814,7 @@ impl Renderer {
             hl_rect: hl.map_or([0.0; 4], |h| h.rect),
             th0: [th.glass_alpha, th.edge_gain, th.text_gain, th.kind_tint],
             th1: [th.floor_trace[0], th.floor_trace[1], th.floor_trace[2], th.floor_gain],
-            th2: [th.floor_lane[0], th.floor_lane[1], th.floor_lane[2], 0.0],
+            th2: [th.floor_lane[0], th.floor_lane[1], th.floor_lane[2], self.look[0] * 2.0], // w: smoke (1 = default)
             th3: [th.edge[0], th.edge[1], th.edge[2], th.edge_mix],
         };
         self.queue.write_buffer(&self.globals_buf, 0, bytemuck::bytes_of(&globals));
@@ -821,7 +823,8 @@ impl Renderer {
             0,
             bytemuck::bytes_of(&PostParams {
                 texel: [1.0 / self.hdr.w as f32, 1.0 / self.hdr.h as f32, th.bloom, time],
-                fx: [self.alarm, 0.0, 0.0, 0.0],
+                // y: vignette (1 = default), z: darkness 0..1, w: grain (1 = default)
+                fx: [self.alarm, self.look[1] / 0.7, self.look[2], self.look[3] * 2.0],
             }),
         );
 

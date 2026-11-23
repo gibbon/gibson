@@ -39,7 +39,11 @@ fn smoke_wisps(p: vec3<f32>, t: f32) -> f32 {
 
 // How much smoke lies between the camera and a point (x: 0 none .. SMOKE_MAX),
 // and how thick its wisps are there (y: 0..1, for its colour).
-fn smoke(world: vec3<f32>, cam: vec3<f32>, t: f32) -> vec2<f32> {
+// `amount` scales it (the LOOK panel's SMOKE: 1 = default, 0 = none).
+fn smoke(world: vec3<f32>, cam: vec3<f32>, t: f32, amount: f32) -> vec2<f32> {
+    if (amount <= 0.0) {
+        return vec2<f32>(0.0);
+    }
     let d = world - cam;
     let dist = length(d);
     // Exponential height fog, integrated exactly along the ray.
@@ -55,7 +59,7 @@ fn smoke(world: vec3<f32>, cam: vec3<f32>, t: f32) -> vec2<f32> {
     // Wisps, sampled near the point and part-way along the ray (for parallax).
     let w = smoke_wisps(world, t) * 0.6 + smoke_wisps(mix(cam, world, 0.45), t) * 0.4;
     let thick = smoothstep(0.22, 0.78, w) * 1.7 + 0.15;
-    let optical = SMOKE_DENSITY * column * dist * thick;
+    let optical = SMOKE_DENSITY * amount * column * dist * thick;
     return vec2<f32>((1.0 - exp(-optical)) * SMOKE_MAX, smoothstep(0.35, 0.8, w));
 }
 

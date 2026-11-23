@@ -3,7 +3,9 @@
 
 struct Post {
     texel: vec4<f32>,   // source texel size xy; z = threshold / strength; w = time
-    fx: vec4<f32>,      // x = alarm: the garbage file's red glitch (0 = calm)
+    fx: vec4<f32>,      // x = alarm: the garbage file's red glitch (0 = calm);
+                        // the LOOK panel: y = vignette (1 = default), z = darkness 0..1,
+                        // w = grain (1 = default)
 };
 @group(0) @binding(0) var src: texture_2d<f32>;
 @group(0) @binding(1) var samp: sampler;
@@ -109,18 +111,19 @@ fn fs_composite(i: VOut) -> @location(0) vec4<f32> {
     }
     // Seedier: a touch darker and less saturated, blacks crushed, a cold green
     // cast in the shadows.
+    let d = pp.fx.z;
     let l = dot(c, vec3(0.3, 0.55, 0.15));
-    c = mix(vec3(l), c, 0.85) * 0.88;
+    c = mix(vec3(l), c, 1.0 - 0.25 * d) * (1.0 - 0.2 * d);
     // (linear light: tiny numbers here are big ones on screen)
-    c = max(c - vec3(0.003), vec3(0.0)) * 1.003;
-    c += vec3(0.0, 0.0012, 0.001) * (1.0 - smoothstep(0.0, 0.1, l));
+    c = max(c - vec3(0.005 * d), vec3(0.0)) * (1.0 + 0.005 * d);
+    c += vec3(0.0, 0.0012, 0.001) * d * (1.0 - smoothstep(0.0, 0.1, l));
     // A heavy vignette: the edges fall away into the dark.
     let v = i.uv - 0.5;
     let r = length(v) * 1.414; // 0 centre, 1 corner
     let vig = smoothstep(0.12, 0.95, r);
-    c *= mix(1.0, 0.04, vig * vig * (3.0 - 2.0 * vig));
+    c *= mix(1.0, 0.04, clamp(vig * vig * (3.0 - 2.0 * vig) * pp.fx.y, 0.0, 1.0));
     // Film grain, stronger in the dark.
     let n = fract(sin(dot(i.clip.xy + pp.texel.w * 61.0, vec2(12.9898, 78.233))) * 43758.5453);
-    c += (n - 0.5) * mix(0.012, 0.03, smoothstep(0.0, 0.4, l));
+    c += (n - 0.5) * mix(0.012, 0.03, smoothstep(0.0, 0.4, l)) * pp.fx.w;
     return vec4<f32>(max(c, vec3(0.0)), 1.0);
 }

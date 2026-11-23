@@ -43,6 +43,9 @@ pub enum HudAction {
     TowerFx,             // next effect on the tower previews
     AutoFly,             // fly itself / stop
     Theme,               // next colour scheme
+    Look,                // open / close the LOOK panel
+    LookSlider(usize),   // LOOK panel: a slider (press and drag)
+    LookReset,           // LOOK panel: back to the defaults
 }
 
 /// The media viewer's overlay.
@@ -90,6 +93,7 @@ pub struct HudState {
     pub hack: Option<(f32, bool, bool)>, // garbage file copying: progress, done, blink
     pub dwell: Option<(String, f32)>,    // inside a folder tower: its name, 0..1 until it opens
     pub radio: Option<(bool, bool)>,     // YouTube player in the corner: playing yet, blink
+    pub look: Option<[u32; 4]>,          // LOOK panel open: its slider values
 }
 
 pub struct Hud {
@@ -100,6 +104,7 @@ pub struct Hud {
     pub hits: Vec<(Rect, HudAction)>,
     pub bar_h: i32,
     pub scrub: Option<Rect>, // viewer: the video timeline (click / drag to seek)
+    pub look_rect: Option<Rect>, // the LOOK panel, while open
     help_open: bool,
     viewer_open: bool,
     last: Option<HudState>,
@@ -115,6 +120,7 @@ impl Hud {
             hits: Vec::new(),
             bar_h: 0,
             scrub: None,
+            look_rect: None,
             help_open: false,
             viewer_open: false,
             last: None,
@@ -123,8 +129,16 @@ impl Hud {
     }
 
     /// True if the cursor is over the HUD (so it shouldn't pick towers behind it).
-    pub fn covers(&self, _x: f64, y: f64) -> bool {
-        self.help_open || self.viewer_open || y < self.bar_h as f64
+    pub fn covers(&self, x: f64, y: f64) -> bool {
+        self.help_open
+            || self.viewer_open
+            || y < self.bar_h as f64
+            || self.look_rect.is_some_and(|r| r.contains(x, y))
+    }
+
+    /// The bar of a LOOK slider, for turning the cursor into a value.
+    pub fn slider_bar(&self, k: usize) -> Option<Rect> {
+        self.hits.iter().find(|(_, a)| *a == HudAction::LookSlider(k)).map(|(r, _)| *r)
     }
 
     /// Redraws if anything changed; returns true when `px` is new.
@@ -139,6 +153,7 @@ impl Hud {
         self.px.resize((w * h * 4) as usize, 0);
         self.hits.clear();
         self.scrub = None;
+        self.look_rect = None;
         self.draw(st, fonts);
         self.last = Some(st.clone());
         true
@@ -359,6 +374,22 @@ impl Hud {
                 self.text(&fonts.mono, small, (tr.x + u(7.0)) as f32, by, &tl, SEARCH, 1.0);
                 self.hits.push((tr, HudAction::Theme));
             }
+            // LOOK, left of that.
+            let ll = "LOOK  L";
+            let lw = text_width(&fonts.mono, small, ll).ceil() as i32;
+            let lr = Rect { x: tr.x - lw - u(24.0), y: r.y, w: lw + u(14.0), h: r.h };
+            if lr.x > x + u(10.0) {
+                let on = st.look.is_some();
+                let hot = st.hot == Some(self.hits.len());
+                if on {
+                    self.fill(lr, CYAN, 0.85);
+                } else if hot {
+                    self.fill(lr, CYAN, 0.2);
+                }
+                self.frame(lr, CYAN, if on || hot { 1.0 } else { 0.6 });
+                self.text(&fonts.mono, small, (lr.x + u(7.0)) as f32, by, ll, if on { INK } else { CYAN }, 1.0);
+                self.hits.push((lr, HudAction::Look));
+            }
             below = bar_h + strip_h;
         }
         self.bar_h = below;
@@ -443,10 +474,71 @@ impl Hud {
             self.radio_bezel(playing, blink, fonts);
         }
 
+        if let (Some(vals), None) = (st.look, &st.viewer) {
+            self.look_panel(&vals, st.hot, fonts);
+        }
+
         self.help_open = st.help;
         if st.help {
             self.help_panel(fonts);
         }
+    }
+
+    /// The LOOK panel (L): sliders for the smoke, vignette, darkness and grain,
+    /// under the strip on the right. Changes show at once.
+    fn look_panel(&mut self, vals: &[u32; 4], hot: Option<usize>, fonts: &Fonts) {
+        let s = self.scale;
+        let u = |v: f32| (v * s).round() as i32;
+        let w = self.w as i32;
+        let small = 13.0 * s;
+        let row = u(50.0);
+        let pw = u(340.0).min(w - u(24.0));
+        let n = crate::settings::LOOK.len() as i32;
+        let r = Rect { x: w - pw - u(14.0), y: self.bar_h + u(10.0), w: pw, h: u(56.0) + n * row + u(48.0) };
+        self.look_rect = Some(r);
+        self.fill(r, [0.0, 0.012, 0.035], 0.9);
+        self.frame(r, CYAN, 0.85);
+        self.fill(Rect { x: r.x, y: r.y, w: r.w, h: u(3.0) }, CYAN, 0.9);
+        self.text(&fonts.wide, 17.0 * s, (r.x + u(18.0)) as f32, (r.y + u(34.0)) as f32, "LOOK", CYAN, 1.0);
+        let close = "L  ESC  CLOSE";
+        let cw = text_width(&fonts.mono, 12.0 * s, close);
+        self.text(&fonts.mono, 12.0 * s, (r.x + r.w) as f32 - cw - 18.0 * s, (r.y + u(32.0)) as f32, close, DIM, 1.0);
+
+        for (k, (_, label, _)) in crate::settings::LOOK.iter().enumerate() {
+            let y = r.y + u(56.0) + k as i32 * row;
+            let v = vals[k].min(100);
+            let x0 = r.x + u(18.0);
+            let bw = r.w - u(36.0);
+            self.text(&fonts.mono, small, x0 as f32, (y + u(14.0)) as f32, label, CYAN, 0.95);
+            let shown = if v == 0 { "OFF".to_string() } else { v.to_string() };
+            let vw = text_width(&fonts.mono, small, &shown);
+            self.text(&fonts.mono, small, (x0 + bw) as f32 - vw, (y + u(14.0)) as f32, &shown, AMBER, 1.0);
+            let bar = Rect { x: x0, y: y + u(24.0), w: bw, h: u(8.0) };
+            let is_hot = hot == Some(self.hits.len());
+            self.fill(bar, [0.0, 0.02, 0.05], 0.8);
+            self.frame(bar, CYAN, if is_hot { 1.0 } else { 0.6 });
+            let fill_w = (bar.w as f32 * v as f32 / 100.0).round() as i32;
+            self.fill(Rect { x: bar.x, y: bar.y, w: fill_w, h: bar.h }, CYAN, 0.75);
+            let knob = Rect { x: bar.x + fill_w - u(3.0), y: bar.y - u(5.0), w: u(6.0), h: bar.h + u(10.0) };
+            self.fill(knob, AMBER, 1.0);
+            // What takes the mouse: the bar's width, and taller than it, to be easy to grab.
+            self.hits.push((Rect { x: bar.x, y: bar.y - u(10.0), w: bar.w, h: bar.h + u(20.0) }, HudAction::LookSlider(k)));
+        }
+
+        // RESET, bottom left; a hint on the right.
+        let rl = "RESET";
+        let rw = text_width(&fonts.mono, small, rl).ceil() as i32;
+        let rr = Rect { x: r.x + u(18.0), y: r.y + r.h - u(38.0), w: rw + u(16.0), h: u(24.0) };
+        let is_hot = hot == Some(self.hits.len());
+        if is_hot {
+            self.fill(rr, CYAN, 0.2);
+        }
+        self.frame(rr, CYAN, if is_hot { 1.0 } else { 0.6 });
+        self.text(&fonts.mono, small, (rr.x + u(8.0)) as f32, (rr.y + u(17.0)) as f32, rl, CYAN, 1.0);
+        self.hits.push((rr, HudAction::LookReset));
+        let hint = "DRAG THE BARS";
+        let hw = text_width(&fonts.mono, 12.0 * s, hint);
+        self.text(&fonts.mono, 12.0 * s, (r.x + r.w) as f32 - hw - 18.0 * s, (rr.y + u(17.0)) as f32, hint, DIM, 0.9);
     }
 
     /// Inside a folder tower: "ENTERING NAME" and a bar filling until it opens.
@@ -853,6 +945,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("P", "fly itself (any key stops)"),
         ("C  /  SHIFT + C", "colour scheme"),
         ("N", "music on / off: a file or YouTube link (see settings)"),
+        ("L", "look: smoke, vignette, darkness, grain (live)"),
     ]),
     ("TOWERS", &[
         ("CLICK", "fly to a tower (selects it, amber)"),

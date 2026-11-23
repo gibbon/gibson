@@ -12,11 +12,21 @@ pub struct Settings {
     pub theme: usize,     // colour scheme
     pub music: Option<PathBuf>, // soundtrack (N): any audio file of yours
     pub window: Option<(u32, u32)>, // window size in pixels (e.g. 1920x1080 for recording)
+    pub look: [u32; 4],   // the LOOK panel (L): smoke, vignette, darkness, grain, 0..100
+}
+
+/// The LOOK sliders: settings-file key, label, default.
+pub const LOOK: [(&str, &str, u32); 4] =
+    [("smoke", "SMOKE", 50), ("vignette", "VIGNETTE", 70), ("darkness", "DARKNESS", 60), ("grain", "FILM GRAIN", 50)];
+
+pub fn look_defaults() -> [u32; 4] {
+    LOOK.map(|l| l.2)
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { tower_fx: 1, viewer_fx: 1, volume: 80, theme: 0, music: None, window: None } // hologram, neon
+        // hologram, neon
+        Settings { tower_fx: 1, viewer_fx: 1, volume: 80, theme: 0, music: None, window: None, look: look_defaults() }
     }
 }
 
@@ -58,7 +68,11 @@ pub fn load() -> Settings {
             "viewer_fx" => s.viewer_fx = n % crate::viewer::EFFECTS.len(),
             "volume" => s.volume = (n as u32).min(100),
             "theme" => s.theme = n % crate::theme::THEMES.len(),
-            _ => {}
+            key => {
+                if let Some(k) = LOOK.iter().position(|l| l.0 == key) {
+                    s.look[k] = (n as u32).min(100);
+                }
+            }
         }
     }
     s
@@ -84,6 +98,13 @@ pub fn save(s: &Settings) {
         s.music.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
         s.window.map(|(w, h)| format!("{w}x{h}")).unwrap_or_default()
     );
+    let mut text = text;
+    text += "# look (L in the app): 0..100
+";
+    for (k, (key, _, _)) in LOOK.iter().enumerate() {
+        text += &format!("{key}={}
+", s.look[k]);
+    }
     let r = f.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&f, text));
     if let Err(e) = r {
         log::warn!("can't save settings to {}: {e}", f.display());

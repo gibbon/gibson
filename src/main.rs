@@ -115,6 +115,8 @@ struct Running {
     effect: usize,           // viewer effect, remembered between pictures
     settings: settings::Settings,
     scrub_drag: Option<f32>, // dragging the viewer's timeline: where (0..1)
+    look_open: bool,         // the LOOK panel (L)
+    look_drag: Option<usize>, // dragging one of its sliders
     view_on_load: Option<PathBuf>, // started with a file: view it once its folder is up
     autofly: Option<autofly::AutoFly>, // flying itself down the streets (P)
     music: Option<audio::Audio>,       // the soundtrack, playing (N)
@@ -467,6 +469,14 @@ impl Running {
                 hud::HudAction::TowerFx => self.step_tower_fx(1),
                 hud::HudAction::AutoFly => self.toggle_autofly(),
                 hud::HudAction::Theme => self.step_theme(1),
+                hud::HudAction::Look => self.look_open = !self.look_open,
+                hud::HudAction::LookSlider(_) => {} // handled on press (see look_press)
+                hud::HudAction::LookReset => {
+                    self.settings.look = settings::look_defaults();
+                    self.apply_look();
+                    settings::save(&self.settings);
+                    self.say("LOOK: BACK TO THE DEFAULTS", false);
+                }
             }
             return;
         }
@@ -845,6 +855,40 @@ impl Running {
     }
 
     /// Where the cursor is along the viewer's timeline, 0..1.
+    /// The LOOK values to the renderer (they show from the next frame).
+    fn apply_look(&mut self) {
+        self.renderer.look = self.settings.look.map(|v| v.min(100) as f32 / 100.0);
+    }
+
+    /// Mouse down: on a LOOK slider? Then it's a drag of that slider, not the camera.
+    fn look_press(&mut self) -> bool {
+        if !self.look_open {
+            return false;
+        }
+        let (cx, cy) = self.cursor;
+        let k = self.hud.hits.iter().find_map(|(r, a)| match a {
+            hud::HudAction::LookSlider(k) if r.contains(cx, cy) => Some(*k),
+            _ => None,
+        });
+        if let Some(k) = k {
+            self.look_drag = Some(k);
+            self.look_move();
+        }
+        k.is_some()
+    }
+
+    /// Dragging a LOOK slider: the value follows the cursor, live.
+    fn look_move(&mut self) {
+        let Some(k) = self.look_drag else { return };
+        let Some(bar) = self.hud.slider_bar(k) else { return };
+        let f = ((self.cursor.0 - bar.x as f64) / bar.w.max(1) as f64).clamp(0.0, 1.0);
+        let v = (f * 100.0).round() as u32;
+        if self.settings.look[k] != v {
+            self.settings.look[k] = v;
+            self.apply_look();
+        }
+    }
+
     fn scrub_fraction(&self) -> f32 {
         match self.hud.scrub {
             Some(r) => ((self.cursor.0 as f32 - r.x as f32) / r.w.max(1) as f32).clamp(0.0, 1.0),
@@ -1262,6 +1306,7 @@ impl Running {
                 (garbage::progress(t), t >= garbage::COPIED, (t * 3.0) as u32 % 2 == 0)
             }),
             radio: self.radio.as_ref().map(|(_, since, playing)| (*playing, since.elapsed().as_millis() / 600 % 2 == 0)),
+            look: self.look_open.then_some(self.settings.look),
         };
         // Hover changes every frame while flying past names: cap the redraw rate.
         if self.hud_drawn.elapsed() < HUD_MIN_INTERVAL && self.hud.w == w && self.hud.h == h {
@@ -1376,6 +1421,8 @@ impl ApplicationHandler for App {
             effect: 1,
             settings: settings::Settings::default(),
             scrub_drag: None,
+            look_open: false,
+            look_drag: None,
             view_on_load: None,
             autofly: None,
             music: None,
@@ -1399,6 +1446,7 @@ impl ApplicationHandler for App {
         s.effect = s.settings.viewer_fx;
         s.renderer.tower_fx = s.settings.tower_fx as u32;
         s.renderer.theme = s.settings.theme;
+        s.apply_look();
         let (gw, gh, gpx) = textgen::glyph_strip(&s.fonts);
         s.renderer.set_glyph_atlas(gw, gh, &gpx);
         s.view_on_load = self.start_file.take();
@@ -1444,6 +1492,8 @@ impl ApplicationHandler for App {
                         ElementState::Pressed => {
                             match code {
                                 KeyCode::Escape if s.help => s.help = false,
+                                KeyCode::Escape if s.look_open => s.look_open = false,
+                                KeyCode::KeyL if !event.repeat => s.look_open = !s.look_open,
                                 KeyCode::Escape => {
                                     s.selected = None;
                                     s.autofly = None;
@@ -1535,6 +1585,16 @@ impl ApplicationHandler for App {
                 if s.viewer.is_some() {
                     return;
                 }
+                if button == MouseButton::Left {
+                    let down = state == ElementState::Pressed;
+                    if down && s.look_press() {
+                        return;
+                    }
+                    if !down && s.look_drag.take().is_some() {
+                        settings::save(&s.settings);
+                        return;
+                    }
+                }
                 if matches!(button, MouseButton::Left | MouseButton::Right) {
                     let down = state == ElementState::Pressed;
                     s.dragging = down;
@@ -1554,6 +1614,10 @@ impl ApplicationHandler for App {
                 s.cursor = (position.x, position.y);
                 if s.scrub_drag.is_some() {
                     s.scrub_drag = Some(s.scrub_fraction());
+                }
+                if s.look_drag.is_some() {
+                    s.look_move();
+                    return;
                 }
                 if s.dragging {
                     if let Some((lx, ly)) = s.last_cursor {
