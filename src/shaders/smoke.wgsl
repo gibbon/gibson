@@ -3,8 +3,8 @@
 // into drifting wisps by noise. It lives in the world, not on the screen: you
 // fly through it, and the towers' bases stand in it.
 
-const SMOKE_DENSITY: f32 = 0.03;  // per unit of distance, at ground level
-const SMOKE_HEIGHT: f32 = 7.0;     // it thins by e every this many units up
+const SMOKE_DENSITY: f32 = 0.035;  // per unit of distance, at ground level
+const SMOKE_HEIGHT: f32 = 9.0;     // it thins by e every this many units up
 const SMOKE_MAX: f32 = 0.8;       // never hides things completely
 
 fn smoke_hash(p: vec3<f32>) -> f32 {
@@ -58,16 +58,16 @@ fn smoke(world: vec3<f32>, cam: vec3<f32>, t: f32, amount: f32) -> vec2<f32> {
     }
     // Wisps, sampled near the point and part-way along the ray (for parallax).
     let w = smoke_wisps(world, t) * 0.6 + smoke_wisps(mix(cam, world, 0.45), t) * 0.4;
-    let thick = smoothstep(0.22, 0.78, w) * 1.7 + 0.15;
+    let thick = smoothstep(0.3, 0.72, w) * 2.4 + 0.06;
     let optical = SMOKE_DENSITY * amount * column * dist * thick;
-    return vec2<f32>((1.0 - exp(-optical)) * SMOKE_MAX, smoothstep(0.35, 0.8, w));
+    return vec2<f32>((1.0 - exp(-optical)) * SMOKE_MAX, smoothstep(0.3, 0.75, w));
 }
 
 // The smoke's own colour: near black where it's thin; where it's thick it
 // catches the city's glow (the theme's haze and floor light), so the wisps show.
 fn smoke_colour(haze: vec3<f32>, glow: vec3<f32>, wisp: f32) -> vec3<f32> {
     // (linear light, so these small numbers are dim on screen)
-    let dark = vec3<f32>(0.003, 0.0035, 0.0045);
-    let lit = vec3<f32>(0.010, 0.012, 0.016) + haze * 0.025 + glow * 0.02;
-    return mix(dark, lit, wisp * wisp);
+    let dark = vec3<f32>(0.004, 0.0045, 0.006);
+    let lit = vec3<f32>(0.03, 0.032, 0.042) + haze * 0.05 + glow * 0.07;
+    return mix(dark, lit, wisp);
 }

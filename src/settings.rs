@@ -12,14 +12,22 @@ pub struct Settings {
     pub theme: usize,     // colour scheme
     pub music: Option<PathBuf>, // soundtrack (N): any audio file of yours
     pub window: Option<(u32, u32)>, // window size in pixels (e.g. 1920x1080 for recording)
-    pub look: [u32; 4],   // the LOOK panel (L): smoke, vignette, darkness, grain, 0..100
+    pub look: [u32; LOOK_N], // the LOOK panel (L): see LOOK, 0..100 each
 }
 
 /// The LOOK sliders: settings-file key, label, default.
-pub const LOOK: [(&str, &str, u32); 4] =
-    [("smoke", "SMOKE", 50), ("vignette", "VIGNETTE", 70), ("darkness", "DARKNESS", 60), ("grain", "FILM GRAIN", 50)];
+pub const LOOK_N: usize = 7;
+pub const LOOK: [(&str, &str, u32); LOOK_N] = [
+    ("smoke", "SMOKE", 50),
+    ("vignette", "VIGNETTE", 70),
+    ("darkness", "DARKNESS", 60),
+    ("grain", "FILM GRAIN", 50),
+    ("crt", "CRT", 35),
+    ("glitch", "GLITCH", 25),
+    ("softness", "SOFTNESS", 40),
+];
 
-pub fn look_defaults() -> [u32; 4] {
+pub fn look_defaults() -> [u32; LOOK_N] {
     LOOK.map(|l| l.2)
 }
 

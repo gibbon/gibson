@@ -80,7 +80,8 @@ struct Instance {
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct PostParams {
     texel: [f32; 4],
-    fx: [f32; 4], // x = alarm (the garbage file's glitch), 0 = calm
+    fx: [f32; 4],   // x = alarm (the garbage file's glitch), 0 = calm; y vignette, z darkness, w grain
+    look: [f32; 4], // x = CRT 0..1, y = glitch 0..1, z = softness 0..1
 }
 
 struct Target {
@@ -113,7 +114,7 @@ pub struct Renderer {
     pub tower_fx: u32, // effect on tower previews (same list as the viewer)
     pub theme: usize,  // colour scheme (theme::THEMES)
     pub alarm: f32,    // 0..1: the garbage file's red glitch over everything
-    pub look: [f32; 4], // LOOK panel, 0..1 each: smoke, vignette, darkness, grain
+    pub look: [f32; crate::settings::LOOK_N], // LOOK panel, 0..1 each (settings::LOOK)
     box_vb: wgpu::Buffer,
     inst_buf: wgpu::Buffer,
 
@@ -574,7 +575,7 @@ impl Renderer {
             tower_fx: 1,
             theme: 0,
             alarm: 0.0,
-            look: [0.5, 0.7, 0.6, 0.5],
+            look: crate::settings::look_defaults().map(|v| v as f32 / 100.0),
             box_vb,
             inst_buf,
             floor_pipe,
@@ -825,6 +826,7 @@ impl Renderer {
                 texel: [1.0 / self.hdr.w as f32, 1.0 / self.hdr.h as f32, th.bloom, time],
                 // y: vignette (1 = default), z: darkness 0..1, w: grain (1 = default)
                 fx: [self.alarm, self.look[1] / 0.7, self.look[2], self.look[3] * 2.0],
+                look: [self.look[4], self.look[5], self.look[6], 0.0],
             }),
         );
 
@@ -1169,7 +1171,7 @@ impl PostCtx<'_> {
     fn pass(&self, src: &Target, z: f32, bloom: Option<&wgpu::TextureView>) -> PostPass {
         let params = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("post params"),
-            contents: bytemuck::bytes_of(&PostParams { texel: [1.0 / src.w as f32, 1.0 / src.h as f32, z, 0.0], fx: [0.0; 4] }),
+            contents: bytemuck::bytes_of(&PostParams { texel: [1.0 / src.w as f32, 1.0 / src.h as f32, z, 0.0], fx: [0.0; 4], look: [0.0; 4] }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {

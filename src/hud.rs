@@ -93,7 +93,7 @@ pub struct HudState {
     pub hack: Option<(f32, bool, bool)>, // garbage file copying: progress, done, blink
     pub dwell: Option<(String, f32)>,    // inside a folder tower: its name, 0..1 until it opens
     pub radio: Option<(bool, bool)>,     // YouTube player in the corner: playing yet, blink
-    pub look: Option<[u32; 4]>,          // LOOK panel open: its slider values
+    pub look: Option<[u32; crate::settings::LOOK_N]>, // LOOK panel open: its slider values
 }
 
 pub struct Hud {
@@ -484,9 +484,9 @@ impl Hud {
         }
     }
 
-    /// The LOOK panel (L): sliders for the smoke, vignette, darkness and grain,
+    /// The LOOK panel (L): sliders for the smoke, vignette, darkness, grain, CRT and glitch,
     /// under the strip on the right. Changes show at once.
-    fn look_panel(&mut self, vals: &[u32; 4], hot: Option<usize>, fonts: &Fonts) {
+    fn look_panel(&mut self, vals: &[u32; crate::settings::LOOK_N], hot: Option<usize>, fonts: &Fonts) {
         let s = self.scale;
         let u = |v: f32| (v * s).round() as i32;
         let w = self.w as i32;
@@ -945,7 +945,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("P", "fly itself (any key stops)"),
         ("C  /  SHIFT + C", "colour scheme"),
         ("N", "music on / off: a file or YouTube link (see settings)"),
-        ("L", "look: smoke, vignette, darkness, grain (live)"),
+        ("L", "look: smoke, vignette, darkness, grain, CRT, glitch, softness"),
     ]),
     ("TOWERS", &[
         ("CLICK", "fly to a tower (selects it, amber)"),
