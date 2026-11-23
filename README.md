@@ -94,7 +94,8 @@ in the settings file; RESET puts them back.
 
 ## Soundtrack
 
-Press **N** to play music while you fly: a default track, played by YouTube's
+Press **M** to play music while you fly (and again to stop it), **N** for the
+next track. By default it plays a mix of tracks, played by YouTube's
 own player in a small panel in the corner. To play something else, set it in
 the settings file:
 

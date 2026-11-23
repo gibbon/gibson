@@ -61,7 +61,7 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const CLICK_SLOP: f64 = 5.0; // pixels the mouse may move and still count as a click
 const HUD_MIN_INTERVAL: Duration = Duration::from_millis(33); // HUD redraws at most ~30/s
 const HISTORY_MAX: usize = 100;
-/// The soundtrack when the settings don't name one (N): played by YouTube's own
+/// The soundtrack when the settings don't name one (M): played by YouTube's own
 /// player, in the corner (or the browser).
 /// The Hackers soundtrack playlist (what the browser gets, if it comes to that)...
 const DEFAULT_MUSIC: &str = "https://www.youtube.com/watch?v=k07cflKCl-Y&list=PL6E1AC915A0204BC0";
@@ -119,7 +119,7 @@ struct Running {
     look_drag: Option<usize>, // dragging one of its sliders
     view_on_load: Option<PathBuf>, // started with a file: view it once its folder is up
     autofly: Option<autofly::AutoFly>, // flying itself down the streets (P)
-    music: Option<audio::Audio>,       // the soundtrack, playing (N)
+    music: Option<audio::Audio>,       // the soundtrack, playing (M on/off)
     radio: Option<(radio::Radio, Instant, bool)>, // or a YouTube link's player: since, playing yet
     hack: Option<Instant>,             // opening the garbage file: the copy sequence, since
     search: Option<String>,  // search box open, with its text
@@ -635,6 +635,7 @@ impl Running {
                     v.toggle_mute();
                 }
             }
+            KeyCode::KeyN if !ev.repeat => self.next_track(),
             KeyCode::Equal | KeyCode::NumpadAdd | KeyCode::Minus | KeyCode::NumpadSubtract => {
                 let up = matches!(code, KeyCode::Equal | KeyCode::NumpadAdd);
                 if let Some(v) = &mut self.viewer {
@@ -716,7 +717,23 @@ impl Running {
             .any(|k| self.keys.contains(k))
     }
 
-    /// N: the soundtrack (the `music=` file in settings) on / off. It loops.
+    /// N: the next track (or the music on, if it's off).
+    fn next_track(&mut self) {
+        if let Some((r, ..)) = &self.radio {
+            r.next();
+            self.say("MUSIC: NEXT TRACK", false);
+        } else if self.music.is_some() {
+            // A file of yours: just the one track, so from the top.
+            if let (Some(m), Some(p)) = (&mut self.music, self.settings.music.clone()) {
+                m.start(&p, 0.0);
+            }
+            self.say("ONE TRACK (YOUR FILE): FROM THE TOP", false);
+        } else {
+            self.start_music();
+        }
+    }
+
+    /// M: the soundtrack (the `music=` setting, or the default) on / off. It loops.
     fn toggle_music(&mut self) {
         if self.music.take().is_some() || self.radio.take().is_some() {
             self.say("MUSIC OFF", false);
@@ -748,7 +765,7 @@ impl Running {
         a.start(&path, 0.0);
         self.music = Some(a);
         let name = path.file_stem().map(|n| n.to_string_lossy().to_uppercase()).unwrap_or_default();
-        self.say(&format!("MUSIC: {name}   N STOPS"), false);
+        self.say(&format!("MUSIC: {name}   M STOPS"), false);
     }
 
     /// A YouTube link: its player in the corner, or else the browser.
@@ -760,7 +777,7 @@ impl Running {
             match radio::Radio::new(&self.window, &src, self.settings.volume) {
                 Ok(r) => {
                     self.radio = Some((r, Instant::now(), false));
-                    self.say("MUSIC: TUNING IN...   N STOPS", false);
+                    self.say("MUSIC: TUNING IN...   N NEXT   M STOPS", false);
                     return;
                 }
                 Err(e) => log::info!("no in-window player ({e}): using the browser"),
@@ -1525,7 +1542,8 @@ impl ApplicationHandler for App {
                                 KeyCode::KeyR if !event.repeat => s.reveal(),
                                 KeyCode::KeyV if !event.repeat => s.view_target(),
                                 KeyCode::KeyP if !event.repeat => s.toggle_autofly(),
-                                KeyCode::KeyN if !event.repeat => s.toggle_music(),
+                                KeyCode::KeyN if !event.repeat => s.next_track(),
+                                KeyCode::KeyM if !event.repeat => s.toggle_music(),
                                 KeyCode::KeyC if !event.repeat && !s.command_held() => {
                                     let back = s.keys.contains(&KeyCode::ShiftLeft) || s.keys.contains(&KeyCode::ShiftRight);
                                     s.step_theme(if back { -1 } else { 1 });

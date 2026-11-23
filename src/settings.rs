@@ -10,7 +10,7 @@ pub struct Settings {
     pub viewer_fx: usize, // effect in the media viewer
     pub volume: u32,      // viewer sound, percent
     pub theme: usize,     // colour scheme
-    pub music: Option<PathBuf>, // soundtrack (N): any audio file of yours
+    pub music: Option<PathBuf>, // soundtrack (M on/off, N next): a file of yours or a YouTube link
     pub window: Option<(u32, u32)>, // window size in pixels (e.g. 1920x1080 for recording)
     pub look: [u32; LOOK_N], // the LOOK panel (L): see LOOK, 0..100 each
 }
@@ -100,7 +100,7 @@ pub fn save(s: &Settings) {
     let Some(f) = file() else { return };
     let text = format!(
         "# Gibson settings\ntower_fx={}\nviewer_fx={}\nvolume={}\ntheme={}\n\
-         # music: an audio file of yours, or a YouTube link, to play with N (and when hidden things surface); empty: the default track\nmusic={}\n\
+         # music: an audio file of yours, or a YouTube link, to play with M (N: next track; also when hidden things surface); empty: the default track\nmusic={}\n\
          # window: size in pixels, e.g. 1920x1080 (empty: fit the screen)\nwindow={}\n",
         s.tower_fx,
         s.viewer_fx,

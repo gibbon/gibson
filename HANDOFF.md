@@ -109,7 +109,7 @@ Milestone 1 committed (968ee10). Git identity is set globally.
   (src/shaders/smoke.wgsl, prepended to floor and tower), the rest via PostParams
   fx.yzw and look.xyz (post.wgsl fs_composite: vignette, grade, grain, CRT,
   glitch bursts, softness).
-- Music (N): `music=` is a file or a YouTube link; empty plays DEFAULT_MUSIC, five tracks of the Hackers soundtrack playlist (DEFAULT_TRACKS), a random one each time
+- Music (M on/off, N next): `music=` is a file or a YouTube link; empty plays DEFAULT_MUSIC, five tracks of the Hackers soundtrack playlist (DEFAULT_TRACKS), a random one each time
   (src/main.rs). Links play in YouTube's own embedded player in a child web view
   (wry; src/radio.rs) in the bottom-right corner, with a HUD bezel around it.
   YouTube's terms: the player stays visible (>= 200x200), unmodified, never

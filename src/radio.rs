@@ -118,6 +118,13 @@ function pick() {{
   else if (tries++ < 40) setTimeout(pick, 250);
   else p.playVideo();
 }}
+// N: another track (a different one of the set, the playlist's next, or from the top).
+function skip() {{
+  if (!p) return;
+  if (PICK.length) p.loadVideoById(another());
+  else if (LIST) p.nextVideo();
+  else {{ p.seekTo(0); p.playVideo(); }}
+}}
 function onYouTubeIframeAPIReady() {{
   var vars = {{ autoplay: 1, rel: 0, playsinline: 1, origin: location.origin }};
   if (PICK.length) {{ VIDEO = another(); }}
@@ -244,6 +251,11 @@ impl Radio {
         }
     }
 
+    /// Another track (N).
+    pub fn next(&self) {
+        let _ = self.view.evaluate_script("skip()");
+    }
+
     /// Hands the keyboard back to Gibson (after a click on the player).
     pub fn give_back_focus(&self) {
         let _ = self.view.focus_parent();
@@ -273,6 +285,7 @@ impl Radio {
     }
     pub fn place(&self, _window: &Window) {}
     pub fn set_paused(&mut self, _paused: bool) {}
+    pub fn next(&self) {}
     pub fn give_back_focus(&self) {}
     pub fn poll(&self) -> Option<Event> {
         None
