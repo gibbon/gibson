@@ -33,6 +33,22 @@ pub fn open(p: &Path) -> Result<String, String> {
     r.map(|_| format!("OPENING {}", name(p))).map_err(|e| format!("CAN'T OPEN: {e}").to_uppercase())
 }
 
+/// Opens a web link (http/https only) in the default browser.
+pub fn open_url(url: &str) -> Result<(), String> {
+    let url = url.trim();
+    if !crate::radio::is_link(url) || url.chars().any(|c| c.is_control() || c == '"') {
+        return Err("NOT A WEB LINK".into());
+    }
+    let r = if cfg!(windows) {
+        Command::new("explorer").arg(url).spawn()
+    } else if cfg!(target_os = "macos") {
+        Command::new("open").arg(url).spawn()
+    } else {
+        Command::new("xdg-open").arg(url).spawn()
+    };
+    r.map(|_| ()).map_err(|e| format!("CAN'T OPEN THE LINK: {e}").to_uppercase())
+}
+
 /// Shows the file selected in the system file manager.
 pub fn reveal(p: &Path) -> Result<String, String> {
     let r = if cfg!(windows) {

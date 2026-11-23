@@ -86,6 +86,16 @@ To always open at one size, add `window=1920x1080` to the settings file.
 
 (On macOS the binary is `Gibson.app/Contents/MacOS/gibson`.)
 
+## Soundtrack
+
+Press **N** to play music while you fly. Set it in the settings file:
+
+- `music=D:\Music\track.mp3`: any audio file of yours, looped.
+- `music=https://www.youtube.com/watch?v=...`: a YouTube video, played by
+  YouTube's own player in a small panel in the corner (Windows and macOS). If
+  the video doesn't allow embedding, or on Linux, it opens in your browser
+  instead.
+
 Settings and a log file live in `%APPDATA%\Gibson` (Windows) or
 `~/Library/Application Support/Gibson` (macOS) or `~/.config/gibson` (Linux).
 

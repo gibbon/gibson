@@ -24,3 +24,6 @@ winresource = "0.1.34"
 [profile.release]
 strip = true
 lto = "thin"
+
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+wry = { version = "0.57.3", default-features = false }

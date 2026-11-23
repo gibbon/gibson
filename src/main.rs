@@ -16,6 +16,7 @@ mod hud;
 mod meta;
 mod nav;
 mod preview;
+mod radio;
 mod render;
 mod settings;
 mod textgen;
@@ -110,6 +111,7 @@ struct Running {
     view_on_load: Option<PathBuf>, // started with a file: view it once its folder is up
     autofly: Option<autofly::AutoFly>, // flying itself down the streets (P)
     music: Option<audio::Audio>,       // the soundtrack, playing (N)
+    radio: Option<(radio::Radio, Instant, bool)>, // or a YouTube link's player: since, playing yet
     hack: Option<Instant>,             // opening the garbage file: the copy sequence, since
     search: Option<String>,  // search box open, with its text
     matches: Vec<f32>,       // per tower: 1 name matches, 0.5 something inside it does
@@ -699,7 +701,7 @@ impl Running {
 
     /// N: the soundtrack (the `music=` file in settings) on / off. It loops.
     fn toggle_music(&mut self) {
-        if self.music.take().is_some() {
+        if self.music.take().is_some() || self.radio.take().is_some() {
             self.say("MUSIC OFF", false);
             return;
         }
@@ -708,9 +710,14 @@ impl Running {
 
     fn start_music(&mut self) {
         let Some(path) = self.settings.music.clone() else {
-            self.say("NO MUSIC SET: ADD music=<FILE> TO SETTINGS.TXT", false);
+            self.say("NO MUSIC SET: ADD music=<FILE OR YOUTUBE LINK> TO SETTINGS.TXT", false);
             return;
         };
+        let link = path.to_string_lossy().into_owned();
+        if radio::is_link(&link) {
+            self.start_radio(&link);
+            return;
+        }
         if !path.is_file() {
             self.say("MUSIC FILE NOT FOUND", true);
             return;
@@ -730,9 +737,69 @@ impl Running {
         self.say(&format!("MUSIC: {name}   N STOPS"), false);
     }
 
+    /// A YouTube link: its player in the corner, or else the browser.
+    fn start_radio(&mut self, link: &str) {
+        if let Some(id) = radio::video_id(link) {
+            match radio::Radio::new(&self.window, &id, self.settings.volume) {
+                Ok(r) => {
+                    self.radio = Some((r, Instant::now(), false));
+                    self.say("MUSIC: TUNING IN...   N STOPS", false);
+                    return;
+                }
+                Err(e) => log::info!("no in-window player ({e}): using the browser"),
+            }
+        }
+        self.radio_in_browser(link, "MUSIC: OPENED IN YOUR BROWSER");
+    }
+
+    fn radio_in_browser(&mut self, link: &str, said: &str) {
+        self.radio = None;
+        match files::open_url(link) {
+            Ok(()) => self.say(said, false),
+            Err(e) => self.say(&e, true),
+        }
+    }
+
+    /// Whether music can start by itself (when hidden things surface): not if it
+    /// would mean throwing a browser window up.
+    fn music_can_autostart(&self) -> bool {
+        let link = self.settings.music.as_ref().map(|p| p.to_string_lossy().into_owned());
+        self.music.is_none()
+            && self.radio.is_none()
+            && match link {
+                None => false,
+                Some(l) => !radio::is_link(&l) || (radio::IN_WINDOW && radio::video_id(&l).is_some()),
+            }
+    }
+
     /// Keeps the soundtrack looping, and hushes it while a video with sound plays.
     fn tend_music(&mut self) {
         let video_sound = self.viewer.as_ref().and_then(|v| v.video.as_ref()).is_some_and(|vi| vi.audio.is_some());
+        if let Some((r, since, playing)) = &mut self.radio {
+            r.set_paused(video_sound);
+            let mut failed = None;
+            while let Some(ev) = r.poll() {
+                match ev {
+                    radio::Event::Playing => {
+                        if !*playing {
+                            *playing = true;
+                            log::info!("youtube player: playing");
+                        }
+                        r.give_back_focus(); // a click on the player took the keyboard
+                    }
+                    radio::Event::Error(code) => failed = Some(code),
+                }
+            }
+            // Nothing after a while (offline, or blocked without saying): the browser.
+            if !*playing && since.elapsed() > Duration::from_secs(20) {
+                failed = Some("timeout".into());
+            }
+            if let Some(code) = failed {
+                log::warn!("youtube player: error {code}: using the browser");
+                let link = self.settings.music.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                self.radio_in_browser(&link, "THIS VIDEO WON'T PLAY IN GIBSON: OPENED IN YOUR BROWSER");
+            }
+        }
         let path = self.settings.music.clone();
         if let (Some(m), Some(path)) = (&mut self.music, path) {
             m.set_paused(video_sound);
@@ -823,7 +890,7 @@ impl Running {
             let _ = tx.send(Msg::Baked { generation, index: i, pages, cached: false, preview: None, duration: 0.0 });
         });
         self.say("HIDDEN FILE FOUND", true);
-        if self.music.is_none() && self.settings.music.is_some() {
+        if self.music_can_autostart() {
             self.start_music();
             self.say("HIDDEN FILE FOUND", true);
         }
@@ -892,7 +959,7 @@ impl Running {
             self.fly_to(i);
             if self.hack.is_none() {
                 self.hack = Some(Instant::now());
-                if self.music.is_none() && self.settings.music.is_some() {
+                if self.music_can_autostart() {
                     self.start_music();
                 }
                 self.message = None;
@@ -1303,6 +1370,7 @@ impl ApplicationHandler for App {
             view_on_load: None,
             autofly: None,
             music: None,
+            radio: None,
             hack: None,
             search: None,
             matches: Vec::new(),
@@ -1333,7 +1401,12 @@ impl ApplicationHandler for App {
         let Some(s) = &mut self.state else { return };
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
-            WindowEvent::Resized(size) => s.renderer.resize(size.width, size.height),
+            WindowEvent::Resized(size) => {
+                s.renderer.resize(size.width, size.height);
+                if let Some((r, ..)) = &s.radio {
+                    r.place(&s.window);
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 if s.viewer.is_some() {
                     if let PhysicalKey::Code(code) = event.physical_key {

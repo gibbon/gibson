@@ -789,7 +789,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("MOUSE WHEEL", "flying speed"),
         ("P", "fly itself (any key stops)"),
         ("C  /  SHIFT + C", "colour scheme"),
-        ("N", "music on / off (see settings)"),
+        ("N", "music on / off: a file or YouTube link (see settings)"),
     ]),
     ("TOWERS", &[
         ("CLICK", "fly to a tower (selects it, amber)"),
