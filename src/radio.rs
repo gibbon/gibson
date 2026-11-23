@@ -84,13 +84,18 @@ function onYouTubeIframeAPIReady() {{
     )
 }
 
-/// The panel's place: the bottom-right corner, in physical pixels.
+/// The panel's place in a window of this size: the bottom-right corner, in
+/// physical pixels (x, y, w, h). The HUD draws its bezel around the same box.
+pub fn panel(win_w: u32, win_h: u32, scale: f64) -> (i32, i32, u32, u32) {
+    let (w, h) = ((W * scale).round() as u32, (H * scale).round() as u32);
+    let m = (MARGIN * scale).round() as i32;
+    (win_w as i32 - w as i32 - m, win_h as i32 - h as i32 - m, w, h)
+}
+
 fn bounds(window: &Window) -> ((i32, i32), (u32, u32)) {
-    let s = window.scale_factor();
     let size = window.inner_size();
-    let (w, h) = ((W * s).round() as u32, (H * s).round() as u32);
-    let m = (MARGIN * s).round() as i32;
-    ((size.width as i32 - w as i32 - m, size.height as i32 - h as i32 - m), (w, h))
+    let (x, y, w, h) = panel(size.width, size.height, window.scale_factor());
+    ((x, y), (w, h))
 }
 
 #[cfg(any(windows, target_os = "macos"))]

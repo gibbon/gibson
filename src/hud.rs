@@ -89,6 +89,7 @@ pub struct HudState {
     pub hot: Option<usize>, // index into `hits` under the cursor
     pub hack: Option<(f32, bool, bool)>, // garbage file copying: progress, done, blink
     pub dwell: Option<(String, f32)>,    // inside a folder tower: its name, 0..1 until it opens
+    pub radio: Option<(bool, bool)>,     // YouTube player in the corner: playing yet, blink
 }
 
 pub struct Hud {
@@ -438,6 +439,10 @@ impl Hud {
             self.hack_panel(p, done, blink, fonts);
         }
 
+        if let Some((playing, blink)) = st.radio {
+            self.radio_bezel(playing, blink, fonts);
+        }
+
         self.help_open = st.help;
         if st.help {
             self.help_panel(fonts);
@@ -465,6 +470,64 @@ impl Hud {
         let hint = "FLY ON THROUGH TO SKIP";
         let hw = text_width(&fonts.mono, 12.0 * s, hint) as i32;
         self.text(&fonts.mono, 12.0 * s, ((w - hw) / 2) as f32, (bar.y + u(24.0)) as f32, hint, CYAN, 0.7);
+    }
+
+    /// The frame around the YouTube player (a separate window on top, in the bottom-
+    /// right corner): a monitor bezel with corner brackets, a label strip, and a
+    /// faint glow on the floor below. The player itself is left exactly as it is.
+    fn radio_bezel(&mut self, playing: bool, blink: bool, fonts: &Fonts) {
+        const RED: [f32; 3] = [1.0, 0.22, 0.16];
+        let s = self.scale;
+        let u = |v: f32| (v * s).round() as i32;
+        let (px, py, pw, ph) = crate::radio::panel(self.w, self.h, s as f64);
+        let p = Rect { x: px, y: py, w: pw as i32, h: ph as i32 };
+        let strip = u(24.0);
+        let pad = u(6.0);
+        let outer = Rect { x: p.x - pad, y: p.y - strip, w: p.w + 2 * pad, h: p.h + strip + pad };
+
+        // Plate and frames.
+        self.fill(outer, [0.0, 0.012, 0.035], 0.88);
+        self.frame(outer, CYAN, 0.55);
+        self.frame(Rect { x: p.x - 1, y: p.y - 1, w: p.w + 2, h: p.h + 2 }, DIM, 0.9);
+
+        // Corner brackets, standing just off the frame.
+        let (len, t, off) = (u(16.0), u(3.0).max(2), u(3.0));
+        let (l, r) = (outer.x - off, outer.x + outer.w + off);
+        let (top, bot) = (outer.y - off, outer.y + outer.h + off);
+        for (cx, cy, sx, sy) in [(l, top, 1, 1), (r, top, -1, 1), (l, bot, 1, -1), (r, bot, -1, -1)] {
+            let hx = if sx > 0 { cx } else { cx - len };
+            let vy = if sy > 0 { cy } else { cy - len };
+            self.fill(Rect { x: hx, y: if sy > 0 { cy } else { cy - t }, w: len, h: t }, CYAN, 0.95);
+            self.fill(Rect { x: if sx > 0 { cx } else { cx - t }, y: vy, w: t, h: len }, CYAN, 0.95);
+        }
+
+        // The label strip: the name on the left, the state on the right.
+        let small = 12.0 * s;
+        let base = (outer.y + strip / 2) as f32 + small * 0.36;
+        self.text(&fonts.mono, small, (outer.x + u(8.0)) as f32, base, "PIRATE RADIO", CYAN, 0.95);
+        let (state, colour) = if playing { ("ON AIR", RED) } else { ("TUNING IN", DIM) };
+        let sw = text_width(&fonts.mono, small, state);
+        let sx = (outer.x + outer.w - u(8.0)) as f32 - sw;
+        self.text(&fonts.mono, small, sx, base, state, colour, 0.95);
+        if playing && blink || !playing {
+            let d = u(7.0);
+            let dot = Rect { x: sx as i32 - d - u(6.0), y: outer.y + (strip - d) / 2, w: d, h: d };
+            self.fill(dot, colour, if playing { 1.0 } else { 0.6 });
+        }
+        // Tick marks along the strip's bottom edge, like a tuning dial.
+        let ticks = 24;
+        for k in 1..ticks {
+            let x = p.x + p.w * k / ticks;
+            let th = if k % 4 == 0 { u(4.0) } else { u(2.0) };
+            self.fill(Rect { x, y: p.y - 1 - th, w: 1, h: th }, DIM, 0.7);
+        }
+
+        // A faint glow on the floor below, fading out.
+        let below = outer.y + outer.h + u(2.0);
+        for k in 0..((self.h as i32 - below).min(u(12.0))) {
+            let a = 0.16 * (1.0 - k as f32 / u(12.0) as f32);
+            self.fill(Rect { x: outer.x + u(10.0), y: below + k, w: outer.w - u(20.0), h: 1 }, CYAN, a);
+        }
     }
 
     /// Opening the garbage file: a copy bar, and a log of what it's doing.

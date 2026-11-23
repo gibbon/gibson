@@ -1255,6 +1255,7 @@ impl Running {
                 let t = since.elapsed().as_secs_f32();
                 (garbage::progress(t), t >= garbage::COPIED, (t * 3.0) as u32 % 2 == 0)
             }),
+            radio: self.radio.as_ref().map(|(_, since, playing)| (*playing, since.elapsed().as_millis() / 600 % 2 == 0)),
         };
         // Hover changes every frame while flying past names: cap the redraw rate.
         if self.hud_drawn.elapsed() < HUD_MIN_INTERVAL && self.hud.w == w && self.hud.h == h {
