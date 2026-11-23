@@ -103,7 +103,7 @@ Milestone 1 committed (968ee10). Git identity is set globally.
   Gibson-linux-x86_64.tar.gz (built on Ubuntu 22.04: glibc 2.35+) on every
   push; a `v*` tag publishes a Release. v0.1.0 released 2026-11-19; v0.2.0
   2026-11-21; v0.2.2 2026-11-23 (Linux, YouTube soundtrack player).
-- Music (N): `music=` is a file or a YouTube link; empty plays DEFAULT_MUSIC, a playlist (shuffled, random first track)
+- Music (N): `music=` is a file or a YouTube link; empty plays DEFAULT_MUSIC, five tracks of the Hackers soundtrack playlist (DEFAULT_TRACKS), a random one each time
   (src/main.rs). Links play in YouTube's own embedded player in a child web view
   (wry; src/radio.rs) in the bottom-right corner, with a HUD bezel around it.
   YouTube's terms: the player stays visible (>= 200x200), unmodified, never

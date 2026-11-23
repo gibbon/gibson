@@ -33,13 +33,14 @@ pub fn is_link(s: &str) -> bool {
 pub struct Source {
     pub video: Option<String>,
     pub list: Option<String>, // a playlist: shuffled, starting on a random track
+    pub pick: Vec<String>,    // or just these videos: a random one, then another
 }
 
 /// A YouTube link's video and / or playlist, if it is one.
 pub fn source(url: &str) -> Option<Source> {
     let list = playlist_id(url);
     let video = video_id(url);
-    (list.is_some() || video.is_some()).then_some(Source { video, list })
+    (list.is_some() || video.is_some()).then_some(Source { video, list, pick: Vec::new() })
 }
 
 fn safe_id(id: &str, len: std::ops::RangeInclusive<usize>) -> bool {
@@ -87,18 +88,28 @@ fn video_id(url: &str) -> Option<String> {
 
 /// The page that holds the player (served to the web view by Gibson itself, so it
 /// has a proper origin, which YouTube's embeds need).
-/// A playlist plays shuffled from a random track, looping; a single video loops.
+/// A playlist plays shuffled from a random track, looping; a single video loops;
+/// a set of videos (`pick`) plays one at random, then another, and so on.
 /// A track in a playlist that won't play (removed, not embeddable) is skipped.
 fn page(src: &Source, volume: u8) -> String {
     let video = src.video.as_deref().unwrap_or("");
     let list = src.list.as_deref().unwrap_or("");
+    // (ids are checked to be [A-Za-z0-9_-] only, so they're safe in the script)
+    let pick = src.pick.iter().filter(|v| safe_id(v, 6..=20)).map(|v| format!("'{v}'")).collect::<Vec<_>>().join(",");
     format!(
         r#"<!doctype html><html><head><meta charset="utf-8">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <style>html,body{{margin:0;height:100%;background:#000;overflow:hidden}}#p{{width:100%;height:100%;border:0}}</style>
 </head><body><div id="p"></div>
 <script>
-var p, VIDEO = '{video}', LIST = '{list}', tries = 0, errors = 0;
+var p, VIDEO = '{video}', LIST = '{list}', PICK = [{pick}], tries = 0, errors = 0;
+// Picking from a set of tracks: a random one, never the same twice running.
+function another() {{
+  var cur = p && p.getVideoData ? p.getVideoData().video_id : '';
+  var rest = PICK.filter(function (v) {{ return v !== cur; }});
+  var from = rest.length ? rest : PICK;
+  return from[Math.floor(Math.random() * from.length)];
+}}
 function send(m) {{ try {{ window.ipc.postMessage(m); }} catch (e) {{}} }}
 // A random track, once the playlist has loaded into the player.
 function pick() {{
@@ -109,32 +120,36 @@ function pick() {{
 }}
 function onYouTubeIframeAPIReady() {{
   var vars = {{ autoplay: 1, rel: 0, playsinline: 1, origin: location.origin }};
-  if (LIST) {{ vars.listType = 'playlist'; vars.list = LIST; }}
+  if (PICK.length) {{ VIDEO = another(); }}
+  else if (LIST) {{ vars.listType = 'playlist'; vars.list = LIST; }}
   else {{ vars.loop = 1; vars.playlist = VIDEO; }}
   var cfg = {{
     width: '100%', height: '100%', playerVars: vars,
     events: {{
       onReady: function (e) {{
         e.target.setVolume({volume});
-        if (LIST) {{ e.target.setShuffle(true); e.target.setLoop(true); pick(); }}
+        if (PICK.length) e.target.playVideo();
+        else if (LIST) {{ e.target.setShuffle(true); e.target.setLoop(true); pick(); }}
         else e.target.playVideo();
       }},
       onStateChange: function (e) {{
         if (e.data === 1) {{
           errors = 0;
           var d = p.getVideoData ? p.getVideoData() : null, i = p.getPlaylistIndex ? p.getPlaylistIndex() : -1;
-          send('playing:' + (d ? d.video_id : '') + ' #' + i);
+          send('playing:' + (d ? d.video_id + ' ' + d.title : '') + ' #' + i);
         }}
-        if (e.data === 0 && !LIST) {{ e.target.seekTo(0); e.target.playVideo(); }}
+        if (e.data === 0 && PICK.length) e.target.loadVideoById(another());
+        else if (e.data === 0 && !LIST) {{ e.target.seekTo(0); e.target.playVideo(); }}
       }},
       onError: function (e) {{
         // In a playlist, skip a track that won't play; give up after a run of them.
-        if (LIST && ++errors < 6) {{ setTimeout(function () {{ p.nextVideo(); }}, 300); return; }}
+        if (PICK.length > 1 && ++errors < 6) {{ setTimeout(function () {{ p.loadVideoById(another()); }}, 300); return; }}
+        if (LIST && !PICK.length && ++errors < 6) {{ setTimeout(function () {{ p.nextVideo(); }}, 300); return; }}
         send('error:' + e.data);
       }}
     }}
   }};
-  if (!LIST) cfg.videoId = VIDEO;
+  if (PICK.length || !LIST) cfg.videoId = VIDEO;
   p = new YT.Player('p', cfg);
 }}
 </script>
@@ -284,7 +299,7 @@ mod tests {
         assert_eq!(s.video.as_deref(), Some("k07cflKCl-Y"));
         let s = source("https://www.youtube.com/playlist?list=PL6E1AC915A0204BC0").unwrap();
         assert_eq!((s.video, s.list.as_deref()), (None, Some("PL6E1AC915A0204BC0")));
-        assert_eq!(source("https://www.youtube.com/watch?v=abcDEF12345&list=x'y"), Some(Source { video: id.clone(), list: None }));
+        assert_eq!(source("https://www.youtube.com/watch?v=abcDEF12345&list=x'y"), Some(Source { video: id.clone(), list: None, pick: Vec::new() }));
         assert!(is_link("HTTPS://x") && !is_link(r"C:\music\song.mp3"));
     }
 }

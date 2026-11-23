@@ -63,8 +63,11 @@ const HUD_MIN_INTERVAL: Duration = Duration::from_millis(33); // HUD redraws at 
 const HISTORY_MAX: usize = 100;
 /// The soundtrack when the settings don't name one (N): played by YouTube's own
 /// player, in the corner (or the browser).
-/// A playlist: a random track each time.
+/// The Hackers soundtrack playlist (what the browser gets, if it comes to that)...
 const DEFAULT_MUSIC: &str = "https://www.youtube.com/watch?v=k07cflKCl-Y&list=PL6E1AC915A0204BC0";
+/// ...of which Gibson plays these, a random one each time: Halcyon + On + On,
+/// Voodoo People, Open Up, One Love, Cowgirl.
+const DEFAULT_TRACKS: [&str; 5] = ["k07cflKCl-Y", "vpCTMddpQNs", "3pBQEbeUlRc", "iohbzmcX6zg", "Wr_wFh46V7I"];
 const MAX_PLAYING: usize = 4; // videos playing at once (the nearest)
 const PLAY_DISTANCE: f32 = 170.0;
 
@@ -740,7 +743,10 @@ impl Running {
 
     /// A YouTube link: its player in the corner, or else the browser.
     fn start_radio(&mut self, link: &str) {
-        if let Some(src) = radio::source(link) {
+        if let Some(mut src) = radio::source(link) {
+            if link == DEFAULT_MUSIC {
+                src.pick = DEFAULT_TRACKS.iter().map(|s| s.to_string()).collect();
+            }
             match radio::Radio::new(&self.window, &src, self.settings.volume) {
                 Ok(r) => {
                     self.radio = Some((r, Instant::now(), false));
