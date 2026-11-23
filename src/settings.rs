@@ -16,9 +16,11 @@ pub struct Settings {
 }
 
 /// The LOOK sliders: settings-file key, label, default.
-pub const LOOK_N: usize = 7;
+pub const LOOK_N: usize = 9;
 pub const LOOK: [(&str, &str, u32); LOOK_N] = [
     ("smoke", "SMOKE", 50),
+    ("smoke_colour", "SMOKE COLOUR", 0), // 0 = grey, then round the colour wheel
+    ("smoke_opacity", "SMOKE OPACITY", 80),
     ("vignette", "VIGNETTE", 70),
     ("darkness", "DARKNESS", 60),
     ("grain", "FILM GRAIN", 50),

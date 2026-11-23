@@ -491,7 +491,7 @@ impl Hud {
         let u = |v: f32| (v * s).round() as i32;
         let w = self.w as i32;
         let small = 13.0 * s;
-        let row = u(50.0);
+        let row = u(46.0);
         let pw = u(340.0).min(w - u(24.0));
         let n = crate::settings::LOOK.len() as i32;
         let r = Rect { x: w - pw - u(14.0), y: self.bar_h + u(10.0), w: pw, h: u(56.0) + n * row + u(48.0) };
@@ -504,13 +504,18 @@ impl Hud {
         let cw = text_width(&fonts.mono, 12.0 * s, close);
         self.text(&fonts.mono, 12.0 * s, (r.x + r.w) as f32 - cw - 18.0 * s, (r.y + u(32.0)) as f32, close, DIM, 1.0);
 
-        for (k, (_, label, _)) in crate::settings::LOOK.iter().enumerate() {
+        for (k, (key, label, _)) in crate::settings::LOOK.iter().enumerate() {
+            let colour = *key == "smoke_colour";
             let y = r.y + u(56.0) + k as i32 * row;
             let v = vals[k].min(100);
             let x0 = r.x + u(18.0);
             let bw = r.w - u(36.0);
             self.text(&fonts.mono, small, x0 as f32, (y + u(14.0)) as f32, label, CYAN, 0.95);
-            let shown = if v == 0 { "OFF".to_string() } else { v.to_string() };
+            let shown = match (v, colour) {
+                (0, true) => "GREY".to_string(),
+                (0, false) => "OFF".to_string(),
+                _ => v.to_string(),
+            };
             let vw = text_width(&fonts.mono, small, &shown);
             self.text(&fonts.mono, small, (x0 + bw) as f32 - vw, (y + u(14.0)) as f32, &shown, AMBER, 1.0);
             let bar = Rect { x: x0, y: y + u(24.0), w: bw, h: u(8.0) };
@@ -518,7 +523,16 @@ impl Hud {
             self.fill(bar, [0.0, 0.02, 0.05], 0.8);
             self.frame(bar, CYAN, if is_hot { 1.0 } else { 0.6 });
             let fill_w = (bar.w as f32 * v as f32 / 100.0).round() as i32;
-            self.fill(Rect { x: bar.x, y: bar.y, w: fill_w, h: bar.h }, CYAN, 0.75);
+            if colour {
+                // The colour wheel along the bar (grey at the very start).
+                for px in 0..bar.w {
+                    let h = px as f32 / bar.w.max(1) as f32;
+                    let c = if px < u(4.0) { [0.6, 0.62, 0.66] } else { hue_rgb(h) };
+                    self.fill(Rect { x: bar.x + px, y: bar.y + 1, w: 1, h: bar.h - 2 }, c, 0.9);
+                }
+            } else {
+                self.fill(Rect { x: bar.x, y: bar.y, w: fill_w, h: bar.h }, CYAN, 0.75);
+            }
             let knob = Rect { x: bar.x + fill_w - u(3.0), y: bar.y - u(5.0), w: u(6.0), h: bar.h + u(10.0) };
             self.fill(knob, AMBER, 1.0);
             // What takes the mouse: the bar's width, and taller than it, to be easy to grab.
@@ -945,7 +959,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("P", "fly itself (any key stops)"),
         ("C  /  SHIFT + C", "colour scheme"),
         ("N", "music on / off: a file or YouTube link (see settings)"),
-        ("L", "look: smoke, vignette, darkness, grain, CRT, glitch, softness"),
+        ("L", "look: smoke (amount, colour, opacity), vignette, darkness, grain, CRT, glitch, softness"),
     ]),
     ("TOWERS", &[
         ("CLICK", "fly to a tower (selects it, amber)"),
@@ -987,6 +1001,12 @@ fn shorten(font: &Font, px: f32, text: &str, max_w: f32) -> String {
         v.pop();
     }
     v.into_iter().collect::<String>() + "…"
+}
+
+/// A colour round the wheel (0..1), as the smoke shader makes it.
+fn hue_rgb(h: f32) -> [f32; 3] {
+    let f = |k: f32| (((h + k).fract() * 6.0 - 3.0).abs() - 1.0).clamp(0.0, 1.0) * 0.8 + 0.2;
+    [f(0.0), f(2.0 / 3.0), f(1.0 / 3.0)]
 }
 
 fn grouped(n: u64) -> String {

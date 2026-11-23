@@ -809,8 +809,10 @@ impl Renderer {
             view_proj: view_proj.to_cols_array_2d(),
             cam: [cam.x, cam.y, cam.z, time],
             city: [origin.x, origin.y, crate::city::CELL, radius],
-            haze: [th.haze[0], th.haze[1], th.haze[2], 0.0],
-            screen: [self.config.width as f32, self.config.height as f32, 0.0, 0.0],
+            // w: smoke opacity (1 = default)
+            haze: [th.haze[0], th.haze[1], th.haze[2], self.look[2] / 0.8],
+            // z: smoke colour (0 = grey, else a hue 0..1)
+            screen: [self.config.width as f32, self.config.height as f32, self.look[1], 0.0],
             hl: [hl.map_or(0.0, |h| h.layer as f32), hl.map_or(0.0, |_| 1.0), self.tower_fx as f32, 0.0],
             hl_rect: hl.map_or([0.0; 4], |h| h.rect),
             th0: [th.glass_alpha, th.edge_gain, th.text_gain, th.kind_tint],
@@ -825,8 +827,8 @@ impl Renderer {
             bytemuck::bytes_of(&PostParams {
                 texel: [1.0 / self.hdr.w as f32, 1.0 / self.hdr.h as f32, th.bloom, time],
                 // y: vignette (1 = default), z: darkness 0..1, w: grain (1 = default)
-                fx: [self.alarm, self.look[1] / 0.7, self.look[2], self.look[3] * 2.0],
-                look: [self.look[4], self.look[5], self.look[6], 0.0],
+                fx: [self.alarm, self.look[3] / 0.7, self.look[4], self.look[5] * 2.0],
+                look: [self.look[6], self.look[7], self.look[8], 0.0],
             }),
         );
 

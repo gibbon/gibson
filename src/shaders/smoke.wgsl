@@ -63,11 +63,29 @@ fn smoke(world: vec3<f32>, cam: vec3<f32>, t: f32, amount: f32) -> vec2<f32> {
     return vec2<f32>((1.0 - exp(-optical)) * SMOKE_MAX, smoothstep(0.3, 0.75, w));
 }
 
+fn smoke_hue(h: f32) -> vec3<f32> {
+    let k = vec3<f32>(0.0, 2.0 / 3.0, 1.0 / 3.0);
+    let c = clamp(abs(fract(h + k) * 6.0 - 3.0) - 1.0, vec3<f32>(0.0), vec3<f32>(1.0));
+    return mix(vec3<f32>(1.0), c, 0.8); // a little short of fully saturated
+}
+
 // The smoke's own colour: near black where it's thin; where it's thick it
 // catches the city's glow (the theme's haze and floor light), so the wisps show.
-fn smoke_colour(haze: vec3<f32>, glow: vec3<f32>, wisp: f32) -> vec3<f32> {
+// `hue`: 0 = grey (with the theme's tint), else a colour round the wheel (0..1).
+fn smoke_colour(haze: vec3<f32>, glow: vec3<f32>, wisp: f32, hue: f32) -> vec3<f32> {
     // (linear light, so these small numbers are dim on screen)
-    let dark = vec3<f32>(0.004, 0.0045, 0.006);
-    let lit = vec3<f32>(0.03, 0.032, 0.042) + haze * 0.05 + glow * 0.07;
+    var dark = vec3<f32>(0.004, 0.0045, 0.006);
+    var lit = vec3<f32>(0.03, 0.032, 0.042) + haze * 0.05 + glow * 0.07;
+    if (hue > 0.0) {
+        let c = smoke_hue(hue);
+        dark = c * 0.005;
+        lit = c * 0.075 + glow * 0.02;
+    }
     return mix(dark, lit, wisp);
+}
+
+// How much of the smoke shows: its amount times the OPACITY slider (1 = default),
+// up to fully opaque.
+fn smoke_opacity(amount: f32, opacity: f32) -> f32 {
+    return min(amount * opacity, 1.0);
 }
