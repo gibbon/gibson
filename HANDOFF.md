@@ -102,7 +102,13 @@ Milestone 1 committed (968ee10). Git identity is set globally.
   icon), Gibson-macos.zip (universal, ad-hoc signed .app) and
   Gibson-linux-x86_64.tar.gz (built on Ubuntu 22.04: glibc 2.35+) on every
   push; a `v*` tag publishes a Release. v0.1.0 released 2026-11-19; v0.2.0
-  2026-11-21; v0.2.2 2026-11-23 (Linux, YouTube soundtrack player).
+  2026-11-21; v0.2.2 2026-11-23 (Linux, YouTube soundtrack player); v0.2.3 2026-11-23
+  (LOOK panel, smoke, five-track default music).
+- LOOK panel (L): sliders in settings::LOOK (keys saved in settings.txt), sent
+  to the shaders as Renderer.look: smoke via Globals th2.w / haze.w / screen.zw
+  (src/shaders/smoke.wgsl, prepended to floor and tower), the rest via PostParams
+  fx.yzw and look.xyz (post.wgsl fs_composite: vignette, grade, grain, CRT,
+  glitch bursts, softness).
 - Music (N): `music=` is a file or a YouTube link; empty plays DEFAULT_MUSIC, five tracks of the Hackers soundtrack playlist (DEFAULT_TRACKS), a random one each time
   (src/main.rs). Links play in YouTube's own embedded player in a child web view
   (wry; src/radio.rs) in the bottom-right corner, with a HUD bezel around it.

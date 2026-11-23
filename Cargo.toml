@@ -1,6 +1,6 @@
 [package]
 name = "gibson"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 license = "MIT"
 description = "A 3D file browser: fly through your folders as a city of glass towers"

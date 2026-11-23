@@ -86,6 +86,12 @@ To always open at one size, add `window=1920x1080` to the settings file.
 
 (On macOS the binary is `Gibson.app/Contents/MacOS/gibson`.)
 
+## Look
+
+Press **L** (or the LOOK chip) for live sliders: smoke (amount, colour, opacity,
+height), vignette, darkness, film grain, CRT, glitch and softness. They're saved
+in the settings file; RESET puts them back.
+
 ## Soundtrack
 
 Press **N** to play music while you fly: a default track, played by YouTube's
