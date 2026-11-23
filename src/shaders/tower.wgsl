@@ -250,7 +250,7 @@ fn fs(i: VOut, @builtin(front_facing) front: bool) -> @location(0) vec4<f32> {
     var col = (body * alpha + emissive) * fog + g.haze.rgb * (1.0 - fog) * (alpha + text * 0.25);
     col *= far;
     // Smoke between us and the glass (premultiplied: the smoke's share scales with alpha).
-    let sm = smoke(i.world, g.cam.xyz, g.cam.w, g.th2.w);
+    let sm = smoke(i.world, g.cam.xyz, g.cam.w, g.th2.w, g.screen.w);
     let so = smoke_opacity(sm.x, g.haze.w);
     col = col * (1.0 - so) + smoke_colour(g.haze.rgb, g.th1.rgb, sm.y, g.screen.z) * so * alpha;
 

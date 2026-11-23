@@ -959,7 +959,7 @@ const HELP: &[(&str, &[(&str, &str)])] = &[
         ("P", "fly itself (any key stops)"),
         ("C  /  SHIFT + C", "colour scheme"),
         ("N", "music on / off: a file or YouTube link (see settings)"),
-        ("L", "look: smoke (amount, colour, opacity), vignette, darkness, grain, CRT, glitch, softness"),
+        ("L", "look: smoke (amount, colour, opacity, height), vignette, darkness, grain, CRT, glitch, softness"),
     ]),
     ("TOWERS", &[
         ("CLICK", "fly to a tower (selects it, amber)"),
