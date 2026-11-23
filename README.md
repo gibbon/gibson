@@ -88,7 +88,9 @@ To always open at one size, add `window=1920x1080` to the settings file.
 
 ## Soundtrack
 
-Press **N** to play music while you fly. Set it in the settings file:
+Press **N** to play music while you fly: a default track, played by YouTube's
+own player in a small panel in the corner. To play something else, set it in
+the settings file:
 
 - `music=D:\Music\track.mp3`: any audio file of yours, looped.
 - `music=https://www.youtube.com/watch?v=...`: a YouTube video, played by

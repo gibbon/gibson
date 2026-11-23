@@ -61,6 +61,9 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 const CLICK_SLOP: f64 = 5.0; // pixels the mouse may move and still count as a click
 const HUD_MIN_INTERVAL: Duration = Duration::from_millis(33); // HUD redraws at most ~30/s
 const HISTORY_MAX: usize = 100;
+/// The soundtrack when the settings don't name one (N): played by YouTube's own
+/// player, in the corner (or the browser).
+const DEFAULT_MUSIC: &str = "https://www.youtube.com/watch?v=3kjfrgkD9K0";
 const MAX_PLAYING: usize = 4; // videos playing at once (the nearest)
 const PLAY_DISTANCE: f32 = 170.0;
 
@@ -709,10 +712,7 @@ impl Running {
     }
 
     fn start_music(&mut self) {
-        let Some(path) = self.settings.music.clone() else {
-            self.say("NO MUSIC SET: ADD music=<FILE OR YOUTUBE LINK> TO SETTINGS.TXT", false);
-            return;
-        };
+        let path = self.settings.music.clone().unwrap_or_else(|| PathBuf::from(DEFAULT_MUSIC));
         let link = path.to_string_lossy().into_owned();
         if radio::is_link(&link) {
             self.start_radio(&link);
@@ -763,13 +763,15 @@ impl Running {
     /// Whether music can start by itself (when hidden things surface): not if it
     /// would mean throwing a browser window up.
     fn music_can_autostart(&self) -> bool {
-        let link = self.settings.music.as_ref().map(|p| p.to_string_lossy().into_owned());
+        let l = self.music_source();
         self.music.is_none()
             && self.radio.is_none()
-            && match link {
-                None => false,
-                Some(l) => !radio::is_link(&l) || (radio::IN_WINDOW && radio::video_id(&l).is_some()),
-            }
+            && (!radio::is_link(&l) || (radio::IN_WINDOW && radio::video_id(&l).is_some()))
+    }
+
+    /// The `music=` setting, or the default link.
+    fn music_source(&self) -> String {
+        self.settings.music.as_ref().map_or(DEFAULT_MUSIC.to_string(), |p| p.to_string_lossy().into_owned())
     }
 
     /// Keeps the soundtrack looping, and hushes it while a video with sound plays.
@@ -796,7 +798,7 @@ impl Running {
             }
             if let Some(code) = failed {
                 log::warn!("youtube player: error {code}: using the browser");
-                let link = self.settings.music.as_ref().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                let link = self.music_source();
                 self.radio_in_browser(&link, "THIS VIDEO WON'T PLAY IN GIBSON: OPENED IN YOUR BROWSER");
             }
         }

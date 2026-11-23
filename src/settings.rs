@@ -75,7 +75,7 @@ pub fn save(s: &Settings) {
     let Some(f) = file() else { return };
     let text = format!(
         "# Gibson settings\ntower_fx={}\nviewer_fx={}\nvolume={}\ntheme={}\n\
-         # music: an audio file of yours, or a YouTube link, to play with N (and when hidden things surface)\nmusic={}\n\
+         # music: an audio file of yours, or a YouTube link, to play with N (and when hidden things surface); empty: the default track\nmusic={}\n\
          # window: size in pixels, e.g. 1920x1080 (empty: fit the screen)\nwindow={}\n",
         s.tower_fx,
         s.viewer_fx,
