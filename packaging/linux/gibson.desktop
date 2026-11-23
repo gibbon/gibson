@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Gibson
+Comment=A 3D file browser: fly through your folders as a city of glass towers
+Exec=gibson %f
+Icon=gibson
+Terminal=false
+Categories=Utility;FileManager;

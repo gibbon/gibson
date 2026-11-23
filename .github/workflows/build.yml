@@ -1,4 +1,5 @@
-# Builds Gibson for Windows (.exe) and macOS (universal .app) on every push, each
+# Builds Gibson for Windows (.exe), macOS (universal .app) and Linux (x86_64
+# tarball) on every push, each
 # twice: a small download that uses an installed FFmpeg, and a "full" one carrying
 # its own slim FFmpeg (built here from source, cached between runs).
 # Pushing a tag like v0.2.0 also publishes them all as a GitHub Release, with the
@@ -60,6 +61,28 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: ffmpeg-macos
+          path: ffmpeg-out
+
+  ffmpeg-linux:
+    # 22.04: an older glibc, so the binaries run on older distros too.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - id: cache
+        uses: actions/cache@v4
+        with:
+          path: ffmpeg-out
+          key: ffmpeg-linux-${{ hashFiles('packaging/ffmpeg/build.sh') }}
+      - if: steps.cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q nasm
+          bash packaging/ffmpeg/build.sh linux-x86_64 ffmpeg-out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-linux
           path: ffmpeg-out
 
   windows:
@@ -124,9 +147,38 @@ jobs:
           name: Gibson-macos
           path: dist/*.zip
 
+  linux:
+    needs: ffmpeg-linux
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q libasound2-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - run: cargo test --release --locked
+      - uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-linux
+          path: ffmpeg-out
+      - shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x ffmpeg-out/ffmpeg
+          ffmpeg-out/ffmpeg -hide_banner -version | head -1
+          bash packaging/linux/make_tarball.sh
+          FFMPEG=ffmpeg-out bash packaging/linux/make_tarball.sh
+          ls -la dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Gibson-linux
+          path: dist/*.tar.gz
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, macos]
+    needs: [windows, macos, linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -138,5 +190,6 @@ jobs:
         with:
           files: |
             out/*.zip
+            out/*.tar.gz
             out/*.tar.xz
           generate_release_notes: true

@@ -7,6 +7,7 @@
 #   packaging/ffmpeg/build.sh <target> <outdir>
 #   target: windows-x86_64 (on Linux, with mingw-w64 + nasm)
 #           macos-arm64 | macos-x86_64 (on a Mac, with nasm)
+#           linux-x86_64 (on Linux, with nasm)
 #
 # Writes <outdir>/ffmpeg[.exe], the licence text, and the exact source tarball
 # (published alongside the release, as the LGPL asks).
@@ -59,6 +60,13 @@ macos-arm64 | macos-x86_64)
         --enable-pthreads --enable-zlib
     jobs=$(sysctl -n hw.ncpu)
     ;;
+linux-x86_64)
+    # Built on an older Ubuntu so it runs on older distros too. Only glibc and
+    # libm are linked dynamically.
+    exe=ffmpeg
+    ./configure "${common[@]}" --enable-pthreads
+    jobs=$(nproc)
+    ;;
 *)
     echo "unknown target: $target" >&2
     exit 1
@@ -66,6 +74,7 @@ macos-arm64 | macos-x86_64)
 esac
 
 make -j"$jobs" "$exe" >/dev/null
+if [ "$target" = linux-x86_64 ]; then strip "$exe"; fi
 cp "$exe" "$out/$exe"
 cp COPYING.LGPLv2.1 "$out/"
 cp "$work/$tarball" "$out/"

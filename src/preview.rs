@@ -124,6 +124,7 @@ pub fn have_ffmpeg() -> bool {
 /// An `ffmpeg` command that doesn't flash a console window.
 pub fn tool(name: &str) -> Command {
     debug_assert_eq!(name, "ffmpeg");
+    #[allow(unused_mut)] // only changed on Windows
     let mut c = Command::new(ffmpeg_path());
     #[cfg(windows)]
     {

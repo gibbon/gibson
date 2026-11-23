@@ -46,6 +46,18 @@ two downloads:
    - macOS 14 and earlier: **right-click** (or Control-click) Gibson.app → **Open** → **Open**.
    - Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/Gibson.app`
 
+### Linux (x86_64)
+
+1. Download `Gibson-linux-x86_64-full.tar.gz` and unpack it:
+   `tar -xzf Gibson-linux-x86_64-full.tar.gz`
+2. Run `gibson/gibson`. Works on X11 and Wayland. Needs Vulkan (Mesa or your
+   GPU's driver); OpenGL is tried if Vulkan isn't there.
+3. Optional: `gibson/install.sh` adds it to your app menu (just for you, in
+   `~/.local`; `install.sh --remove` takes it out).
+
+Built on Ubuntu 22.04, so it needs glibc 2.35 or newer (most distros from 2022 on).
+Sound uses ALSA (PipeWire and PulseAudio provide it).
+
 ### Video previews need FFmpeg
 
 The `-full` downloads include it. With a plain download, images work out of the
@@ -53,6 +65,7 @@ box, but for video towers and the video player install FFmpeg:
 
 - Windows: `winget install Gyan.FFmpeg` (then restart Gibson)
 - macOS: `brew install ffmpeg` (Homebrew)
+- Linux: your package manager, e.g. `sudo apt install ffmpeg`
 
 Without it, Gibson still runs; videos just show as ordinary file towers.
 
@@ -74,21 +87,22 @@ To always open at one size, add `window=1920x1080` to the settings file.
 (On macOS the binary is `Gibson.app/Contents/MacOS/gibson`.)
 
 Settings and a log file live in `%APPDATA%\Gibson` (Windows) or
-`~/Library/Application Support/Gibson` (macOS).
+`~/Library/Application Support/Gibson` (macOS) or `~/.config/gibson` (Linux).
 
 ## Build from source
 
 Needs [Rust](https://rustup.rs) (stable). On Windows, the MSVC build tools; on
-macOS, the Xcode command-line tools.
+macOS, the Xcode command-line tools; on Linux, the ALSA headers
+(`sudo apt install libasound2-dev pkg-config`).
 
 ```
 cargo run --release
 ```
 
-Pushing a tag like `v0.2.0` makes GitHub Actions build the Windows `.exe` and
-the universal macOS `.app`, each with and without FFmpeg, and attach them to a
+Pushing a tag like `v0.2.0` makes GitHub Actions build the Windows `.exe`, the
+universal macOS `.app` and the Linux tarball, each with and without FFmpeg, and attach them to a
 release (see `.github/workflows/build.yml`, `packaging/macos/make_app.sh` and
-`packaging/ffmpeg/build.sh`).
+`packaging/linux/make_tarball.sh` and `packaging/ffmpeg/build.sh`).
 
 ## License
 
