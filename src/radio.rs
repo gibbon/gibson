@@ -28,14 +28,47 @@ pub fn is_link(s: &str) -> bool {
     s.starts_with("https://") || s.starts_with("http://")
 }
 
+/// What a YouTube link points at: a video, a playlist, or both.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Source {
+    pub video: Option<String>,
+    pub list: Option<String>, // a playlist: shuffled, starting on a random track
+}
+
+/// A YouTube link's video and / or playlist, if it is one.
+pub fn source(url: &str) -> Option<Source> {
+    let list = playlist_id(url);
+    let video = video_id(url);
+    (list.is_some() || video.is_some()).then_some(Source { video, list })
+}
+
+fn safe_id(id: &str, len: std::ops::RangeInclusive<usize>) -> bool {
+    len.contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// The `list=` in a YouTube link (watch?v=..&list=.., or playlist?list=..).
+fn playlist_id(url: &str) -> Option<String> {
+    let url = url.trim();
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    let host = host.trim_start_matches("www.").trim_start_matches("m.").trim_start_matches("music.");
+    if !["youtube.com", "youtube-nocookie.com", "youtu.be"].contains(&host) {
+        return None;
+    }
+    let (_, q) = path.split_once('?')?;
+    let id = q.split(['&', '#']).find_map(|kv| kv.strip_prefix("list="))?;
+    safe_id(id, 10..=64).then(|| id.to_string())
+}
+
 /// The video's id from the usual kinds of YouTube link, if it is one.
-pub fn video_id(url: &str) -> Option<String> {
+fn video_id(url: &str) -> Option<String> {
     let url = url.trim();
     let rest = url.split_once("://").map_or(url, |(_, r)| r);
     let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
     let host = host.trim_start_matches("www.").trim_start_matches("m.").trim_start_matches("music.");
     let id = match host {
         "youtu.be" => path.split(['?', '&', '#', '/']).next()?.to_string(),
+        "youtube.com" | "youtube-nocookie.com" if path.starts_with("playlist") => return None,
         "youtube.com" | "youtube-nocookie.com" => {
             if let Some(q) = path.strip_prefix("watch?").or_else(|| path.split_once("watch?").map(|(_, q)| q)) {
                 q.split(['&', '#']).find_map(|kv| kv.strip_prefix("v="))?.to_string()
@@ -49,34 +82,60 @@ pub fn video_id(url: &str) -> Option<String> {
         }
         _ => return None,
     };
-    let ok = (6..=20).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    ok.then_some(id)
+    safe_id(&id, 6..=20).then_some(id)
 }
 
 /// The page that holds the player (served to the web view by Gibson itself, so it
 /// has a proper origin, which YouTube's embeds need).
-fn page(id: &str, volume: u8) -> String {
+/// A playlist plays shuffled from a random track, looping; a single video loops.
+/// A track in a playlist that won't play (removed, not embeddable) is skipped.
+fn page(src: &Source, volume: u8) -> String {
+    let video = src.video.as_deref().unwrap_or("");
+    let list = src.list.as_deref().unwrap_or("");
     format!(
         r#"<!doctype html><html><head><meta charset="utf-8">
 <meta name="referrer" content="strict-origin-when-cross-origin">
 <style>html,body{{margin:0;height:100%;background:#000;overflow:hidden}}#p{{width:100%;height:100%;border:0}}</style>
 </head><body><div id="p"></div>
 <script>
-var p;
+var p, VIDEO = '{video}', LIST = '{list}', tries = 0, errors = 0;
 function send(m) {{ try {{ window.ipc.postMessage(m); }} catch (e) {{}} }}
+// A random track, once the playlist has loaded into the player.
+function pick() {{
+  var ids = p.getPlaylist();
+  if (ids && ids.length) p.playVideoAt(Math.floor(Math.random() * ids.length));
+  else if (tries++ < 40) setTimeout(pick, 250);
+  else p.playVideo();
+}}
 function onYouTubeIframeAPIReady() {{
-  p = new YT.Player('p', {{
-    width: '100%', height: '100%', videoId: '{id}',
-    playerVars: {{ autoplay: 1, loop: 1, playlist: '{id}', rel: 0, playsinline: 1, origin: location.origin }},
+  var vars = {{ autoplay: 1, rel: 0, playsinline: 1, origin: location.origin }};
+  if (LIST) {{ vars.listType = 'playlist'; vars.list = LIST; }}
+  else {{ vars.loop = 1; vars.playlist = VIDEO; }}
+  var cfg = {{
+    width: '100%', height: '100%', playerVars: vars,
     events: {{
-      onReady: function (e) {{ e.target.setVolume({volume}); e.target.playVideo(); }},
-      onStateChange: function (e) {{
-        if (e.data === 1) send('playing');
-        if (e.data === 0) {{ e.target.seekTo(0); e.target.playVideo(); }}
+      onReady: function (e) {{
+        e.target.setVolume({volume});
+        if (LIST) {{ e.target.setShuffle(true); e.target.setLoop(true); pick(); }}
+        else e.target.playVideo();
       }},
-      onError: function (e) {{ send('error:' + e.data); }}
+      onStateChange: function (e) {{
+        if (e.data === 1) {{
+          errors = 0;
+          var d = p.getVideoData ? p.getVideoData() : null, i = p.getPlaylistIndex ? p.getPlaylistIndex() : -1;
+          send('playing:' + (d ? d.video_id : '') + ' #' + i);
+        }}
+        if (e.data === 0 && !LIST) {{ e.target.seekTo(0); e.target.playVideo(); }}
+      }},
+      onError: function (e) {{
+        // In a playlist, skip a track that won't play; give up after a run of them.
+        if (LIST && ++errors < 6) {{ setTimeout(function () {{ p.nextVideo(); }}, 300); return; }}
+        send('error:' + e.data);
+      }}
     }}
-  }});
+  }};
+  if (!LIST) cfg.videoId = VIDEO;
+  p = new YT.Player('p', cfg);
 }}
 </script>
 <script src="https://www.youtube.com/iframe_api" onerror="send('error:offline')"></script>
@@ -108,14 +167,14 @@ pub struct Radio {
 
 #[cfg(any(windows, target_os = "macos"))]
 impl Radio {
-    pub fn new(window: &Window, id: &str, volume: u32) -> Result<Radio, String> {
+    pub fn new(window: &Window, src: &Source, volume: u32) -> Result<Radio, String> {
         use std::borrow::Cow;
         use wry::{WebContext, WebViewBuilder, http};
 
         // The web view's own files (cookies, cache) under Gibson's settings folder,
         // not next to the exe.
         let mut context = WebContext::new(crate::settings::dir().map(|d| d.join("webview")));
-        let html = page(id, volume.min(100) as u8);
+        let html = page(src, volume.min(100) as u8);
         let (tx, events) = channel();
         let home = if cfg!(windows) { "http://gibson.localhost/" } else { "gibson://localhost/" };
         let ((x, y), (w, h)) = bounds(window);
@@ -133,6 +192,7 @@ impl Radio {
             .with_background_color((0, 0, 0, 255))
             .with_ipc_handler(move |req| {
                 let m = req.body();
+                log::info!("youtube player: {m}");
                 let _ = tx.send(match m.strip_prefix("error:") {
                     Some(code) => Event::Error(code.to_string()),
                     None => Event::Playing,
@@ -193,7 +253,7 @@ pub struct Radio {
 
 #[cfg(not(any(windows, target_os = "macos")))]
 impl Radio {
-    pub fn new(_window: &Window, _id: &str, _volume: u32) -> Result<Radio, String> {
+    pub fn new(_window: &Window, _src: &Source, _volume: u32) -> Result<Radio, String> {
         Err("no in-window player on this platform".into())
     }
     pub fn place(&self, _window: &Window) {}
@@ -219,6 +279,12 @@ mod tests {
         assert_eq!(video_id("https://www.youtube.com/embed/abcDEF12345"), id);
         assert_eq!(video_id("https://example.com/watch?v=abcDEF12345"), None);
         assert_eq!(video_id("https://www.youtube.com/watch?v=<script>"), None);
+        let s = source("https://www.youtube.com/watch?v=k07cflKCl-Y&list=PL6E1AC915A0204BC0").unwrap();
+        assert_eq!(s.list.as_deref(), Some("PL6E1AC915A0204BC0"));
+        assert_eq!(s.video.as_deref(), Some("k07cflKCl-Y"));
+        let s = source("https://www.youtube.com/playlist?list=PL6E1AC915A0204BC0").unwrap();
+        assert_eq!((s.video, s.list.as_deref()), (None, Some("PL6E1AC915A0204BC0")));
+        assert_eq!(source("https://www.youtube.com/watch?v=abcDEF12345&list=x'y"), Some(Source { video: id.clone(), list: None }));
         assert!(is_link("HTTPS://x") && !is_link(r"C:\music\song.mp3"));
     }
 }

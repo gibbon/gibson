@@ -93,7 +93,8 @@ own player in a small panel in the corner. To play something else, set it in
 the settings file:
 
 - `music=D:\Music\track.mp3`: any audio file of yours, looped.
-- `music=https://www.youtube.com/watch?v=...`: a YouTube video, played by
+- `music=https://www.youtube.com/watch?v=...`: a YouTube video or playlist
+  (a playlist plays shuffled, from a random track), played by
   YouTube's own player in a small panel in the corner (Windows and macOS). If
   the video doesn't allow embedding, or on Linux, it opens in your browser
   instead.

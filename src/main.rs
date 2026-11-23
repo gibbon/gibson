@@ -63,7 +63,8 @@ const HUD_MIN_INTERVAL: Duration = Duration::from_millis(33); // HUD redraws at 
 const HISTORY_MAX: usize = 100;
 /// The soundtrack when the settings don't name one (N): played by YouTube's own
 /// player, in the corner (or the browser).
-const DEFAULT_MUSIC: &str = "https://www.youtube.com/watch?v=3kjfrgkD9K0";
+/// A playlist: a random track each time.
+const DEFAULT_MUSIC: &str = "https://www.youtube.com/watch?v=k07cflKCl-Y&list=PL6E1AC915A0204BC0";
 const MAX_PLAYING: usize = 4; // videos playing at once (the nearest)
 const PLAY_DISTANCE: f32 = 170.0;
 
@@ -739,8 +740,8 @@ impl Running {
 
     /// A YouTube link: its player in the corner, or else the browser.
     fn start_radio(&mut self, link: &str) {
-        if let Some(id) = radio::video_id(link) {
-            match radio::Radio::new(&self.window, &id, self.settings.volume) {
+        if let Some(src) = radio::source(link) {
+            match radio::Radio::new(&self.window, &src, self.settings.volume) {
                 Ok(r) => {
                     self.radio = Some((r, Instant::now(), false));
                     self.say("MUSIC: TUNING IN...   N STOPS", false);
@@ -766,7 +767,7 @@ impl Running {
         let l = self.music_source();
         self.music.is_none()
             && self.radio.is_none()
-            && (!radio::is_link(&l) || (radio::IN_WINDOW && radio::video_id(&l).is_some()))
+            && (!radio::is_link(&l) || (radio::IN_WINDOW && radio::source(&l).is_some()))
     }
 
     /// The `music=` setting, or the default link.
@@ -785,7 +786,6 @@ impl Running {
                     radio::Event::Playing => {
                         if !*playing {
                             *playing = true;
-                            log::info!("youtube player: playing");
                         }
                         r.give_back_focus(); // a click on the player took the keyboard
                     }
